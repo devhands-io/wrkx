@@ -1,20 +1,20 @@
 # wrkx
 
-  **wrkx is wrk2 with community patches**
+**wrkx is wrk2 with community patches**
 
-  Both wrk and wrk2 are amaizing projects. While wrk2 produces most accurate load, unfortunately it has some bugs, 
-  most of them well-known and fixed by other people. Unfortunately, according to the current stage (April 2024), 
-  wrk2 is not supported actively as last wrk2 pull-request was merged ~5 years ago. 
+Both wrk and wrk2 are amaizing projects. While wrk2 produces most accurate load, unfortunately it has some bugs, 
+most of them well-known and fixed by other people. Unfortunately, according to the current stage (April 2024), 
+wrk2 is not supported actively as last wrk2 pull-request was merged ~5 years ago. 
 
-  Loving wrk2 and being heavily dependant on it's quality, we create this repo to keep mostly updated wrk2 version 
-  with some critical bugs fixed and some nice features merged. 
+Loving wrk2 and being heavily dependant on it's quality, we create this repo to keep mostly updated wrk2 version 
+with some critical bugs fixed and some nice features merged. 
 
-  Many thanks to Danil Duk for his painstaking research work which inspired this project.
-  His [wrk-helper](https://github.com/neduck/wrk-helper) might be useful for scenarios automation and results presentation/analysis. 
+Many thanks to Danil Duk for his painstaking research work which inspired this project.
+His [wrk-helper](https://github.com/neduck/wrk-helper) might be useful for scenarios automation and results presentation/analysis. 
 
-  Applied patches:
-    * 17th Apr 2024: 100% CPU fix ("Re-connect when peer closes the connection", [wrk2/pull/33](https://github.com/giltene/wrk2/pull/33/))
-    * 17th Apr 2024: Set affinity -a option ("Add ability to specify CPU affinity for wrk threads", [wrk2/pull/129](https://github.com/giltene/wrk2/pull/129/))
+Applied patches:
+* 17th Apr 2024: 100% CPU fix ("Re-connect when peer closes the connection", [wrk2/pull/33](https://github.com/giltene/wrk2/pull/33/))
+* 17th Apr 2024: Set affinity -a option ("Add ability to specify CPU affinity for wrk threads", [wrk2/pull/129](https://github.com/giltene/wrk2/pull/129/))
 
 # wrk2
 [![Build Status](https://travis-ci.com/giltene/wrk2.svg?branch=master)](https://travis-ci.com/giltene/wrk2) [![Gitter](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/giltene/wrk2?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
