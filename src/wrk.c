@@ -679,6 +679,7 @@ static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
 static void socket_readable(aeEventLoop *loop, int fd, void *data, int mask) {
     connection *c = data;
     size_t n;
+    int read_status = OK;
 
     do {
         switch (read_status = sock.read(c, &n)) {
