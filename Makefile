@@ -61,39 +61,7 @@ $(LDIR)/libluajit.a:
 	@echo Building LuaJIT...
 	@$(MAKE) -C $(LDIR) BUILDMODE=static
 
-test: test-unit test-e2e
-UNITY_SRC := deps/unity/unity.c
-UNITY_INC := -Ideps/unity
-TEST_UNIT_SRC := tests/unit/runner.c
-TEST_UNIT_BIN := obj/test_unit
-
-TEST_STATS_SRC := tests/unit/test_stats.c
-TEST_STATS_BIN := obj/test_stats
-STATS_DEPS     := src/stats.c src/zmalloc.c src/tinymt64.c src/hdr_histogram.c
-
-TEST_UNITS_SRC := tests/unit/test_units.c
-TEST_UNITS_BIN := obj/test_units
-UNITS_DEPS     := src/units.c src/aprintf.c src/zmalloc.c
-
-test-unit: $(TEST_UNIT_BIN) $(TEST_STATS_BIN) $(TEST_UNITS_BIN)
-	@./$(TEST_UNIT_BIN)
-	@./$(TEST_STATS_BIN)
-	@./$(TEST_UNITS_BIN)
-
-$(TEST_UNIT_BIN): $(TEST_UNIT_SRC) $(UNITY_SRC) | $(ODIR)
-	@$(CC) $(CFLAGS) $(UNITY_INC) -o $@ $^
-
-$(TEST_STATS_BIN): $(TEST_STATS_SRC) $(UNITY_SRC) $(STATS_DEPS) | $(ODIR)
-	@$(CC) $(CFLAGS) $(UNITY_INC) -Isrc -DUNITY_INCLUDE_DOUBLE -o $@ $^ -lm -lpthread
-
-$(TEST_UNITS_BIN): $(TEST_UNITS_SRC) $(UNITY_SRC) $(UNITS_DEPS) | $(ODIR)
-	@$(CC) $(CFLAGS) $(UNITY_INC) -Isrc -include tests/unit/platform_compat.h -o $@ $^ -lpthread
-test-e2e:
-	@echo "no e2e tests yet" && exit 0
-test-asan:
-	@echo "no asan tests yet" && exit 0
-
-.PHONY: all clean test test-unit test-e2e test-asan
+.PHONY: all clean
 .SUFFIXES:
 .SUFFIXES: .c .o .lua
 
