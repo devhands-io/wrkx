@@ -2,7 +2,7 @@
 #define UNITS_H
 
 #include <sys/queue.h>
-#include <sched.h>
+#include "config.h"
 
 char *format_binary(long double);
 char *format_metric(long double);

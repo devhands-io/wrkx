@@ -267,14 +267,15 @@ void *thread_main(void *arg) {
     aeEventLoop *loop = thread->loop;
 
     if (thread->cpu_set != NULL) {
+#ifdef __linux__
         int res;
         cpu_set_t *set = thread->cpu_set;
-
         res = pthread_setaffinity_np(pthread_self(), sizeof(*set), set);
         if (res != 0) {
             fprintf(stderr, "set thread affinity failed (errno: %d)\n", res);
             exit(EXIT_FAILURE);
         }
+#endif
     }
 
     thread->cs = zcalloc(thread->connections * sizeof(connection));

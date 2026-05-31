@@ -10,9 +10,10 @@ else ifeq ($(TARGET), darwin)
 	# Per https://luajit.org/install.html: If MACOSX_DEPLOYMENT_TARGET
 	# is not set then it's forced to 10.4, which breaks compile on Mojave.
 	export MACOSX_DEPLOYMENT_TARGET = $(shell sw_vers -productVersion)
-	LDFLAGS += -pagezero_size 10000 -image_base 100000000
-	LIBS += -L/usr/local/opt/openssl/lib
-	CFLAGS += -I/usr/local/include -I/usr/local/opt/openssl/include
+
+	OPENSSL_PREFIX := $(shell brew --prefix openssl 2>/dev/null || echo /usr/local/opt/openssl)
+	LIBS   += -L$(OPENSSL_PREFIX)/lib
+	CFLAGS += -I$(OPENSSL_PREFIX)/include
 else ifeq ($(TARGET), linux)
         CFLAGS  += -D_GNU_SOURCE
 	LIBS    += -ldl
@@ -75,10 +76,15 @@ TEST_UNITS_SRC := tests/unit/test_units.c
 TEST_UNITS_BIN := obj/test_units
 UNITS_DEPS     := src/units.c src/aprintf.c src/zmalloc.c
 
-test-unit: $(TEST_UNIT_BIN) $(TEST_STATS_BIN) $(TEST_UNITS_BIN)
+TEST_HDR_SRC := tests/unit/test_hdr.c
+TEST_HDR_BIN := obj/test_hdr
+HDR_DEPS     := src/hdr_histogram.c
+
+test-unit: $(TEST_UNIT_BIN) $(TEST_STATS_BIN) $(TEST_UNITS_BIN) $(TEST_HDR_BIN)
 	@./$(TEST_UNIT_BIN)
 	@./$(TEST_STATS_BIN)
 	@./$(TEST_UNITS_BIN)
+	@./$(TEST_HDR_BIN)
 
 $(TEST_UNIT_BIN): $(TEST_UNIT_SRC) $(UNITY_SRC) | $(ODIR)
 	@$(CC) $(CFLAGS) $(UNITY_INC) -o $@ $^
@@ -88,8 +94,11 @@ $(TEST_STATS_BIN): $(TEST_STATS_SRC) $(UNITY_SRC) $(STATS_DEPS) | $(ODIR)
 
 $(TEST_UNITS_BIN): $(TEST_UNITS_SRC) $(UNITY_SRC) $(UNITS_DEPS) | $(ODIR)
 	@$(CC) $(CFLAGS) $(UNITY_INC) -Isrc -include tests/unit/platform_compat.h -o $@ $^ -lpthread
+
+$(TEST_HDR_BIN): $(TEST_HDR_SRC) $(UNITY_SRC) $(HDR_DEPS) | $(ODIR)
+	@$(CC) $(CFLAGS) $(UNITY_INC) -Isrc -o $@ $^ -lm
 test-e2e:
-	@echo "no e2e tests yet" && exit 0
+	@bash tests/e2e/smoke.sh
 test-asan:
 	@echo "no asan tests yet" && exit 0
 
