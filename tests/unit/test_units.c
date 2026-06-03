@@ -5,6 +5,7 @@
 #include <string.h>
 #include "unity.h"
 #include "units.h"
+#include "zmalloc.h"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -86,9 +87,9 @@ void test_scan_affinity_single(void) {
     /* The head's first entry should be the item we parsed */
     struct aff_set *item = STAILQ_FIRST(head);
     TEST_ASSERT_NOT_NULL(item);
-    /* Cleanup */
-    free(item);
-    free(head);
+    /* Cleanup — use zfree: scan_affinity allocates via zcalloc/zmalloc */
+    zfree(item);
+    zfree(head);
 }
 
 void test_scan_affinity_multi(void) {
@@ -101,10 +102,10 @@ void test_scan_affinity_multi(void) {
     cur = STAILQ_FIRST(head);
     while (cur) {
         next = STAILQ_NEXT(cur, items);
-        free(cur);
+        zfree(cur);   /* allocated with zcalloc inside scan_affinity */
         cur = next;
     }
-    free(head);
+    zfree(head);      /* allocated with zmalloc inside scan_affinity */
 }
 
 int main(void) {
