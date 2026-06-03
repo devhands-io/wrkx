@@ -3,12 +3,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-WRK="$ROOT_DIR/wrk"
+WRK="$ROOT_DIR/wrkx"
 SERVER="$SCRIPT_DIR/mock_server.py"
 PORT=18080
 
 if [[ ! -x "$WRK" ]]; then
-    echo "SKIP: wrk binary not found at $WRK (build first with 'make')" >&2
+    echo "SKIP: wrkx binary not found at $WRK (build first with 'make')" >&2
     exit 0
 fi
 

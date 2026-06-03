@@ -53,7 +53,7 @@ static void handler(int sig) {
 }
 
 static void usage() {
-    printf("Usage: wrk <options> <url>                            \n"
+    printf("Usage: wrkx <options> <url>                           \n"
            "  Options:                                            \n"
            "    -c, --connections <N>  Connections to keep open   \n"
            "    -d, --duration    <T>  Duration of test           \n"
@@ -788,7 +788,7 @@ static int parse_args(struct config *cfg, char **url, struct http_parser_url *pa
                 if (scan_metric(optarg, &cfg->rate)) return -1;
                 break;
             case 'v':
-                printf("wrk %s [%s] ", VERSION, aeGetApiName());
+                printf("wrkx %s [%s] ", VERSION, aeGetApiName());
                 printf("Copyright (C) 2012 Will Glozer\n");
                 break;
             case 'h':
