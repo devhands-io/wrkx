@@ -17,3 +17,9 @@ deps/luajit/src/luajit
 .idea
 CMakeLists.txt
 config.mk
+
+# gcov coverage artifacts
+*.gcda
+*.gcno
+*.gcov
+obj/cov/

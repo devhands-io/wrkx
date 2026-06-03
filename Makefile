@@ -22,6 +22,7 @@ LDFLAGS += -L$(LDIR)
 all: $(BIN)
 
 clean:
+	@rm -rf obj/cov
 	$(RM) $(BIN) obj/*
 	@$(MAKE) -C deps/luajit clean
 
@@ -89,7 +90,43 @@ test-e2e:
 test-asan:
 	@echo "no asan tests yet" && exit 0
 
-.PHONY: all clean test test-unit test-e2e test-asan
+# ---------------------------------------------------------------------------
+# Coverage via gcov
+# ---------------------------------------------------------------------------
+COVFLAGS := --coverage -O0 -fno-inline
+COV_DIR  := obj/cov
+
+coverage: | $(ODIR)
+	@rm -rf $(COV_DIR) && mkdir -p $(COV_DIR)
+	@echo "Building test_stats with coverage..."
+	@$(CC) $(CFLAGS) $(COVFLAGS) $(UNITY_INC) -Isrc -DUNITY_INCLUDE_DOUBLE \
+		-o $(COV_DIR)/test_stats \
+		$(TEST_STATS_SRC) $(UNITY_SRC) $(STATS_DEPS) -lm -lpthread
+	@echo "Building test_units with coverage..."
+	@$(CC) $(CFLAGS) $(COVFLAGS) $(UNITY_INC) -Isrc \
+		-include tests/unit/platform_compat.h \
+		-o $(COV_DIR)/test_units \
+		$(TEST_UNITS_SRC) $(UNITY_SRC) $(UNITS_DEPS) -lpthread
+	@echo "Running covered test binaries..."
+	@cd $(COV_DIR) && ./test_stats  > /dev/null
+	@cd $(COV_DIR) && ./test_units  > /dev/null
+	@echo "Generating gcov reports..."
+	@gcov -o $(COV_DIR) $(COV_DIR)/test_stats-stats     2>&1 | grep -E "^File|^Lines"
+	@gcov -o $(COV_DIR) $(COV_DIR)/test_units-units     2>&1 | grep -E "^File|^Lines"
+	@echo "Checking coverage thresholds (>= 80%)..."
+	@bash -c '\
+		for pair in "$(COV_DIR)/test_stats-stats:stats.c" "$(COV_DIR)/test_units-units:units.c"; do \
+			gcno=$${pair%%:*}; label=$${pair##*:}; \
+			pct=$$(gcov -o $(COV_DIR) $$gcno 2>&1 | grep "Lines executed" | head -1 | grep -oE "[0-9]+\.[0-9]+"); \
+			int_pct=$$(echo "$$pct" | cut -d. -f1); \
+			if [ "$$int_pct" -lt 80 ]; then \
+				echo "FAIL: $$label coverage $${pct}% < 80%"; exit 1; \
+			else \
+				echo "PASS: $$label coverage $${pct}%"; \
+			fi; \
+		done'
+
+.PHONY: all clean test test-unit test-e2e test-asan coverage
 .SUFFIXES:
 .SUFFIXES: .c .o .lua
 
