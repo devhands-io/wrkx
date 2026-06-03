@@ -84,6 +84,7 @@ $(TEST_HDR_BIN): $(TEST_HDR_SRC) $(UNITY_SRC) $(HDR_DEPS) | $(ODIR)
 test-e2e:
 	@bash tests/e2e/smoke.sh
 	@bash tests/e2e/latency.sh
+	@bash tests/e2e/reconnect.sh
 test-asan:
 	@echo "no asan tests yet" && exit 0
 
