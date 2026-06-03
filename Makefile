@@ -87,8 +87,37 @@ test-e2e:
 	@bash tests/e2e/latency.sh
 	@bash tests/e2e/reconnect.sh
 	@bash tests/e2e/errors.sh
-test-asan:
-	@echo "no asan tests yet" && exit 0
+# ---------------------------------------------------------------------------
+# ASAN + UBSan unit tests
+# NOTE: the full wrkx binary is NOT instrumented here — LuaJIT's custom
+# mmap-based allocator conflicts with ASAN's shadow memory on both macOS
+# and Linux, causing false positives. Unit test binaries have no LuaJIT
+# dependency and can be fully instrumented. The smoke E2E runs the
+# release binary so the full request path is still exercised.
+#
+# Linux note: if using GCC, ensure libasan is installed (gcc-sanitizers
+# or libasan package). With Clang, compiler-rt provides the runtime.
+# ---------------------------------------------------------------------------
+ASANFLAGS := -fsanitize=address,undefined -fno-omit-frame-pointer -O1
+
+test-asan: | $(ODIR)
+	@echo "Building ASAN/UBSan unit test binaries..."
+	@$(CC) $(CFLAGS) $(ASANFLAGS) $(UNITY_INC) -Isrc -DUNITY_INCLUDE_DOUBLE \
+		-o obj/asan_stats \
+		$(TEST_STATS_SRC) $(UNITY_SRC) $(STATS_DEPS) -lm -lpthread
+	@$(CC) $(CFLAGS) $(ASANFLAGS) $(UNITY_INC) -Isrc \
+		-include tests/unit/platform_compat.h \
+		-o obj/asan_units \
+		$(TEST_UNITS_SRC) $(UNITY_SRC) $(UNITS_DEPS) -lpthread
+	@$(CC) $(CFLAGS) $(ASANFLAGS) $(UNITY_INC) -Isrc \
+		-o obj/asan_hdr \
+		$(TEST_HDR_SRC) $(UNITY_SRC) $(HDR_DEPS) -lm
+	@echo "Running ASAN/UBSan unit tests..."
+	@./obj/asan_stats
+	@./obj/asan_units
+	@./obj/asan_hdr
+	@echo "Running smoke E2E against release binary..."
+	@bash tests/e2e/smoke.sh
 
 # ---------------------------------------------------------------------------
 # Coverage via gcov
