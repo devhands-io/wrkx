@@ -87,21 +87,56 @@ static void usage() {
 }
 
 static void *progress_main(void *arg) {
-    uint64_t stop_at    = *(uint64_t *)arg;
-    int      bar_width  = 20;
-    uint64_t n_threads  = cfg.threads;
+    uint64_t stop_at   = *(uint64_t *)arg;
+    int      bar_width = 20;
+    uint64_t n_threads = cfg.threads;
+    uint64_t cal_total = CALIBRATE_DELAY_MS / 1000;  /* calibration seconds */
 
-    /* Wait until every worker thread has calibrated */
+    /* ------------------------------------------------------------------ *
+     * Phase 1 — Calibration bar                                          *
+     * Uses \n (scrolling) not \r because the interleaved                 *
+     * "Thread calibration:" messages also emit \n; mixing \r and \n     *
+     * would corrupt the display.                                         *
+     * Exits early if all threads finish calibrating before the timer.   *
+     * ------------------------------------------------------------------ */
+    for (uint64_t s = 0; s <= cal_total; s++) {
+        if (g_progress_done) return NULL;
+        if (__sync_fetch_and_add(&g_calibrated_threads, 0) >= (int)n_threads)
+            break;
+
+        double   pct    = (double)s / (double)cal_total;
+        int      filled = (int)(pct * bar_width);
+
+        printf("  Calibrating: [");
+        for (int i = 0; i < bar_width; i++) {
+            if      (i < filled)               putchar('=');
+            else if (i == filled && pct < 1.0) putchar('>');
+            else                               putchar(' ');
+        }
+        printf("] %3d%% (%" PRIu64 "s / %" PRIu64 "s)\n",
+               (int)(pct * 100.0), s, cal_total);
+        fflush(stdout);
+
+        if (s == cal_total) break;
+        sleep(1);
+    }
+
+    /* ------------------------------------------------------------------ *
+     * Phase 2 — Wait for any straggler threads (typically instant now)  *
+     * ------------------------------------------------------------------ */
     while (!g_progress_done &&
            __sync_fetch_and_add(&g_calibrated_threads, 0) < (int)n_threads)
-        usleep(100000);  /* 100 ms poll */
+        usleep(100000);
 
     if (g_progress_done) return NULL;
 
+    /* ------------------------------------------------------------------ *
+     * Phase 3 — Run bar (\r-based, existing behaviour, unchanged)       *
+     * ------------------------------------------------------------------ */
     uint64_t bar_start = time_us();
     uint64_t total_us  = stop_at > bar_start ? stop_at - bar_start : 1;
 
-    printf("\n");  /* blank line separating calibration from bar */
+    printf("\n");  /* blank line separating calibration output from run bar */
     fflush(stdout);
 
     while (!g_progress_done) {
@@ -116,11 +151,11 @@ static void *progress_main(void *arg) {
 
         printf("\r  Progress: [");
         for (int i = 0; i < bar_width; i++) {
-            if      (i < filled)             putchar('=');
+            if      (i < filled)               putchar('=');
             else if (i == filled && pct < 1.0) putchar('>');
-            else                             putchar(' ');
+            else                               putchar(' ');
         }
-        printf("] %3d%% (%"PRIu64"s / %"PRIu64"s)  ",
+        printf("] %3d%% (%" PRIu64 "s / %" PRIu64 "s)  ",
                (int)(pct * 100.0), el_s, tot_s);
         fflush(stdout);
 
