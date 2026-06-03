@@ -53,5 +53,6 @@ static void print_stats_header();
 static void print_stats(char *, stats *, char *(*)(long double));
 static void print_stats_latency(stats *);
 static void print_hdr_latency(struct hdr_histogram*, const char*, bool);
+static void *progress_main(void *);
 
 #endif /* MAIN_H */
