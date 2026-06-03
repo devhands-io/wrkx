@@ -1,5 +1,7 @@
 # wrkx
 
+[![CI](https://github.com/devhands-io/wrkx/actions/workflows/ci.yml/badge.svg)](https://github.com/devhands-io/wrkx/actions/workflows/ci.yml)
+
 **wrkx is wrk2 with community patches**
 
 Both wrk and wrk2 are amaizing projects. While wrk2 produces most accurate load, unfortunately it has some bugs, 

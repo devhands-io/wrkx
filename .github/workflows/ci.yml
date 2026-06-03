@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [devel, main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # macOS — Apple Clang, Homebrew OpenSSL, full suite including coverage
+  # ---------------------------------------------------------------------------
+  macos:
+    name: Build & Test (macOS)
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install OpenSSL
+        run: brew install openssl@3
+
+      - name: Configure
+        run: ./configure
+
+      - name: Build
+        run: make clean && make
+
+      - name: Unit & E2E tests
+        run: make test
+
+      - name: Coverage (gcov)
+        run: make coverage
+
+      - name: ASAN / UBSan
+        run: make test-asan
+
+  # ---------------------------------------------------------------------------
+  # Linux — GCC, system OpenSSL, full suite
+  # Note: `make coverage` is macOS-only for now — gcov file-naming differs
+  # between Apple Clang and GCC in single-step compilation mode. A follow-up
+  # task will add a cross-platform coverage approach (lcov or separate -c
+  # compilation steps).
+  # ---------------------------------------------------------------------------
+  linux:
+    name: Build & Test (Linux)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update -q && sudo apt-get install -y libssl-dev bc
+
+      - name: Configure
+        run: ./configure
+
+      - name: Build
+        run: make clean && make
+
+      - name: Unit & E2E tests
+        run: make test
+
+      - name: ASAN / UBSan
+        run: make test-asan
