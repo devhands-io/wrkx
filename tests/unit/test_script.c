@@ -125,7 +125,7 @@ void test_script_request_custom_function(void) {
     TEST_ASSERT_NOT_NULL(L);
 
     /* Custom global request() overrides wrk.request */
-    luaL_dostring(L, "function request() return 'PING' end");
+    (void)luaL_dostring(L, "function request() return 'PING' end");
 
     char  *buf = NULL;
     size_t len = 0;
@@ -153,7 +153,7 @@ void test_script_is_static_without_request_fn(void) {
 void test_script_is_static_with_request_fn(void) {
     lua_State *L = script_create(NULL, "http://localhost/", no_headers);
     TEST_ASSERT_NOT_NULL(L);
-    luaL_dostring(L, "function request() return wrk.format() end");
+    (void)luaL_dostring(L, "function request() return wrk.format() end");
     TEST_ASSERT_FALSE(script_is_static(L));
     lua_close(L);
 }
@@ -172,7 +172,7 @@ void test_script_want_response_false_by_default(void) {
 void test_script_want_response_true_when_defined(void) {
     lua_State *L = script_create(NULL, "http://localhost/", no_headers);
     TEST_ASSERT_NOT_NULL(L);
-    luaL_dostring(L, "function response(status, headers, body) end");
+    (void)luaL_dostring(L, "function response(status, headers, body) end");
     TEST_ASSERT_TRUE(script_want_response(L));
     lua_close(L);
 }
@@ -191,7 +191,7 @@ void test_script_has_done_false_by_default(void) {
 void test_script_has_done_true_when_defined(void) {
     lua_State *L = script_create(NULL, "http://localhost/", no_headers);
     TEST_ASSERT_NOT_NULL(L);
-    luaL_dostring(L, "function done(summary, latency, requests) end");
+    (void)luaL_dostring(L, "function done(summary, latency, requests) end");
     TEST_ASSERT_TRUE(script_has_done(L));
     lua_close(L);
 }
