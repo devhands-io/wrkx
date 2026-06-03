@@ -895,7 +895,7 @@ static int parse_args(struct config *cfg, char **url, struct http_parser_url *pa
                 break;
             case 'v':
                 printf("wrkx %s [%s] ", VERSION, aeGetApiName());
-                printf("Copyright (C) 2012 Will Glozer\n");
+                printf("Credits: Will Glozer (wrk), Gil Tene (wrk2)\n");
                 break;
             case 'h':
             case '?':
