@@ -457,6 +457,9 @@ typedef struct {
   uint32_t cmd, cmdsize, symoff, nsyms, stroff, strsize;
 } mach_symtab_command;
 typedef struct {
+  uint32_t cmd, cmdsize, platform, minos, sdk, ntools;
+} mach_build_version_command;
+typedef struct {
   int32_t strx;
   uint8_t type, sect;
   uint16_t desc;
@@ -467,6 +470,7 @@ typedef struct {
   mach_segment_command_64 seg;
   mach_section_64 sec;
   mach_symtab_command sym;
+  mach_build_version_command bv;
 } mach_obj_64;
 typedef struct {
   mach_nlist_64 sym_entry;
@@ -480,6 +484,10 @@ typedef struct {
     cputype, cpusubtype = 0x0100000c, 0
   end
   local function aligned(v, a) return bit.band(v+a-1, -a) end
+  -- Parse MACOSX_DEPLOYMENT_TARGET (e.g. "14.5") into Mach-O version encoding.
+  local deplstr = os.getenv("MACOSX_DEPLOYMENT_TARGET") or "13.0"
+  local maj, min_ = deplstr:match("^(%d+)%.?(%d*)")
+  local minos = (tonumber(maj) or 13) * 0x10000 + (tonumber(min_) or 0) * 0x100
 
   -- Create Mach-O object and fill in header.
   local o = ffi.new("mach_obj_64")
@@ -493,8 +501,8 @@ typedef struct {
   o.hdr.cputype = cputype
   o.hdr.cpusubtype = cpusubtype
   o.hdr.filetype = 1
-  o.hdr.ncmds = 2
-  o.hdr.sizeofcmds = ffi.sizeof(o.seg)+ffi.sizeof(o.sec)+ffi.sizeof(o.sym)
+  o.hdr.ncmds = 3
+  o.hdr.sizeofcmds = ffi.sizeof(o.seg)+ffi.sizeof(o.sec)+ffi.sizeof(o.sym)+ffi.sizeof(o.bv)
   o.seg.cmd = 0x19
   o.seg.cmdsize = ffi.sizeof(o.seg)+ffi.sizeof(o.sec)
   o.seg.vmsize = #s
@@ -513,6 +521,12 @@ typedef struct {
   o.sym.nsyms = 1
   o.sym.stroff = ofs_sym + ffi.offsetof(t, "space")
   o.sym.strsize = aligned(#symname+2, 8)
+  o.bv.cmd = 0x32
+  o.bv.cmdsize = ffi.sizeof(o.bv)
+  o.bv.platform = 1
+  o.bv.minos = minos
+  o.bv.sdk = 0
+  o.bv.ntools = 0
   t.sym_entry.type = 0xf
   t.sym_entry.sect = 1
   t.sym_entry.strx = 1

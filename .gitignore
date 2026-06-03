@@ -16,3 +16,4 @@ deps/luajit/src/luajit
 
 .idea
 CMakeLists.txt
+config.mk
