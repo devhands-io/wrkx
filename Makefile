@@ -85,6 +85,7 @@ test-e2e:
 	@bash tests/e2e/smoke.sh
 	@bash tests/e2e/latency.sh
 	@bash tests/e2e/reconnect.sh
+	@bash tests/e2e/errors.sh
 test-asan:
 	@echo "no asan tests yet" && exit 0
 
