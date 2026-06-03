@@ -19,7 +19,7 @@ Applied patches:
 * 17th Apr 2024: Set affinity -a option ("Add ability to specify CPU affinity for wrk threads", [wrk2/pull/129](https://github.com/giltene/wrk2/pull/129/))
 
 # wrk2
-[![Build Status](https://travis-ci.com/giltene/wrk2.svg?branch=master)](https://travis-ci.com/giltene/wrk2) [![Gitter](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/giltene/wrk2?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
+[![Gitter](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/giltene/wrk2?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
 
   **a HTTP benchmarking tool based mostly on wrk**
 
