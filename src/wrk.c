@@ -21,6 +21,7 @@ static struct config {
     uint64_t rate;
     uint64_t delay_ms;
     bool     latency;
+    bool     latency_dist_only;
     bool     u_latency;
     bool     dynamic;
     bool     record_all_responses;
@@ -64,6 +65,8 @@ static void usage() {
            "    -s, --script      <S>  Load Lua script file       \n"
            "    -H, --header      <H>  Add header to request      \n"
            "    -L  --latency          Print latency statistics   \n"
+           "    -l  --l_latency        Print latency distribution \n"
+           "                           (no detailed spectrum)     \n"
            "    -U  --u_latency        Print uncorrected latency statistics\n"
            "        --timeout     <T>  Socket/request timeout     \n"
            "    -B, --batch_latency    Measure latency of whole   \n"
@@ -226,14 +229,15 @@ int main(int argc, char **argv) {
 
     if (cfg.latency) {
         print_hdr_latency(latency_histogram,
-                "Recorded Latency");
+                "Recorded Latency", !cfg.latency_dist_only);
         printf("----------------------------------------------------------\n");
     }
 
     if (cfg.u_latency) {
         printf("\n");
         print_hdr_latency(u_latency_histogram,
-                "Uncorrected Latency (measured without taking delayed starts into account)");
+                "Uncorrected Latency (measured without taking delayed starts into account)",
+                !cfg.latency_dist_only);
         printf("----------------------------------------------------------\n");
     }
 
@@ -601,9 +605,10 @@ static void socket_connected(aeEventLoop *loop, int fd, void *data, int mask) {
     connection *c = data;
 
     switch (sock.connect(c, cfg.host)) {
-        case OK:    break;
-        case ERROR: goto error;
-        case RETRY: return;
+        case OK:       break;
+        case ERROR:    goto error;
+        case RETRY:    return;
+        case READ_EOF: goto error;
     }
 
     http_parser_init(&c->parser, HTTP_RESPONSE);
@@ -658,9 +663,10 @@ static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
     }
 
     switch (sock.write(c, buf, len, &n)) {
-        case OK:    break;
-        case ERROR: goto error;
-        case RETRY: return;
+        case OK:       break;
+        case ERROR:    goto error;
+        case RETRY:    return;
+        case READ_EOF: goto error;
     }
 
     c->written += n;
@@ -729,6 +735,7 @@ static struct option longopts[] = {
     { "script",         required_argument, NULL, 's' },
     { "header",         required_argument, NULL, 'H' },
     { "latency",        no_argument,       NULL, 'L' },
+    { "l_latency",      no_argument,       NULL, 'l' },
     { "u_latency",      no_argument,       NULL, 'U' },
     { "batch_latency",  no_argument,       NULL, 'B' },
     { "timeout",        required_argument, NULL, 'T' },
@@ -750,7 +757,7 @@ static int parse_args(struct config *cfg, char **url, struct http_parser_url *pa
     cfg->rate        = 0;
     cfg->record_all_responses = true;
 
-    while ((c = getopt_long(argc, argv, "t:a:c:d:s:H:T:R:LUBrv?", longopts, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "t:a:c:d:s:H:T:R:LlUBrv?", longopts, NULL)) != -1) {
         switch (c) {
             case 't':
                 if (scan_metric(optarg, &cfg->threads)) return -1;
@@ -772,6 +779,10 @@ static int parse_args(struct config *cfg, char **url, struct http_parser_url *pa
                 break;
             case 'L':
                 cfg->latency = true;
+                break;
+            case 'l':
+                cfg->latency = true;
+                cfg->latency_dist_only = true;
                 break;
             case 'B':
                 cfg->record_all_responses = false;
@@ -825,8 +836,8 @@ static int parse_args(struct config *cfg, char **url, struct http_parser_url *pa
             i++;
 
         if (cfg->threads != i) {
-            fprintf(stderr, "number of affinity CPUs (%lu) does not match the "
-                    "number of threads (%lu)\n", i, cfg->threads);
+            fprintf(stderr, "number of affinity CPUs (%llu) does not match the "
+                    "number of threads (%llu)\n", (unsigned long long)i, (unsigned long long)cfg->threads);
             return -1;
         }
     }
@@ -866,7 +877,7 @@ static void print_stats(char *name, stats *stats, char *(*fmt)(long double)) {
     printf("%8.2Lf%%\n", stats_within_stdev(stats, mean, stdev, 1));
 }
 
-static void print_hdr_latency(struct hdr_histogram* histogram, const char* description) {
+static void print_hdr_latency(struct hdr_histogram* histogram, const char* description, bool print_spectrum) {
     long double percentiles[] = { 50.0, 75.0, 90.0, 99.0, 99.9, 99.99, 99.999, 100.0};
     printf("  Latency Distribution (HdrHistogram - %s)\n", description);
     for (size_t i = 0; i < sizeof(percentiles) / sizeof(long double); i++) {
@@ -876,8 +887,10 @@ static void print_hdr_latency(struct hdr_histogram* histogram, const char* descr
         print_units(n, format_time_us, 10);
         printf("\n");
     }
-    printf("\n%s\n", "  Detailed Percentile spectrum:");
-    hdr_percentiles_print(histogram, stdout, 5, 1000.0, CLASSIC);
+    if (print_spectrum) {
+        printf("\n%s\n", "  Detailed Percentile spectrum:");
+        hdr_percentiles_print(histogram, stdout, 5, 1000.0, CLASSIC);
+    }
 }
 
 static void print_stats_latency(stats *stats) {
