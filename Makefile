@@ -47,6 +47,18 @@ $(LDIR)/libluajit.a:
 	@echo Building LuaJIT...
 	@$(MAKE) -C $(LDIR) BUILDMODE=static
 
+# ---------------------------------------------------------------------------
+# P1-1 contract check (ADR 0001): the three layer-contract headers must compile
+# and co-include cleanly against the stub src/main.c. Headers only — no layer
+# implementation is linked. See tasks/t025-define-layer-contracts.md.
+# ---------------------------------------------------------------------------
+CONTRACT_HDRS := src/orchestrator.h src/proto/proto.h src/scripting/script_api.h
+
+contracts-check: $(CONTRACT_HDRS) src/main.c
+	@echo "Checking P1-1 layer contracts compile..."
+	@$(CC) $(CFLAGS) -Isrc -fsyntax-only src/main.c
+	@echo "OK: layer contracts compile cleanly"
+
 test: test-unit test-e2e
 UNITY_SRC := deps/unity/unity.c
 UNITY_INC := -Ideps/unity
@@ -174,7 +186,7 @@ coverage: | $(ODIR)
 			fi; \
 		done'
 
-.PHONY: all clean test test-unit test-e2e test-asan coverage
+.PHONY: all clean test test-unit test-e2e test-asan coverage contracts-check
 # test_script is intentionally absent from test-asan (LuaJIT + ASAN conflict)
 .SUFFIXES:
 .SUFFIXES: .c .o .lua
