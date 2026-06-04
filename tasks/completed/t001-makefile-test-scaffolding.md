@@ -1,3 +1,4 @@
+title: Makefile test scaffolding (remove .travis, add test targets)
 status: completed
 depends: []
 

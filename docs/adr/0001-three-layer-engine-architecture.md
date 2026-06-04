@@ -1,12 +1,13 @@
-# ADR-001: Three-Layer Engine Architecture
+# 1. Three-Layer Engine Architecture
 
-| Field      | Value                                      |
-|------------|--------------------------------------------|
-| Status     | Accepted                                   |
-| Date       | 2026-06-04                                 |
-| Deciders   | wrkx core team                             |
-| Supersedes | —                                          |
-| Superseded by | —                                       |
+| Field         | Value          |
+|---------------|----------------|
+| Status        | Accepted       |
+| Date          | 2026-06-04     |
+| Phase         | Phase 1        |
+| Deciders      | wrkx core team |
+| Supersedes    | —              |
+| Superseded by | —              |
 
 ---
 

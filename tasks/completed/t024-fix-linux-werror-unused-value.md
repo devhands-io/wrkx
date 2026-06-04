@@ -1,4 +1,6 @@
-# t24 — Fix Linux `-Werror=unused-value` in test_script.c (`luaL_dostring`)
+title: Fix Linux `-Werror=unused-value` in test_script.c (`luaL_dostring`)
+status: completed
+depends: t23
 
 ## Problem
 
