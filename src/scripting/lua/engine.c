@@ -23,6 +23,7 @@
 #include "scripting/lua/engine.h"
 #include "scripting/lua/http1_helpers.h"
 #include "orchestrator.h"
+#include "http_parser.h"   /* http_parser_parse_url — ADR 0002 configure slot */
 
 /* -------------------------------------------------------------------------
  * Engine state
@@ -143,6 +144,90 @@ static script_engine *lua_create(const char *file) {
         return NULL;
     }
     return engine;
+}
+
+/* -------------------------------------------------------------------------
+ * ADR 0002 Decision 3 — configure slot
+ * ---------------------------------------------------------------------- */
+
+/*
+ * lua_configure: called once after create(), before init().
+ *
+ * Parses `url` with http_parser_parse_url and sets:
+ *   wrk.scheme, wrk.host, wrk.port (number), wrk.path
+ *
+ * Iterates `headers[0..n_headers-1]` and installs each "Key: value" string
+ * into wrk.headers, matching the legacy script_create(file, url, headers)
+ * behaviour. Either argument may be NULL / zero without error.
+ *
+ * Invariant 3: http_parser.h is a project-internal parser utility, not a
+ * protocol implementation header. Including it here is permitted.
+ */
+static int lua_configure(script_engine *engine, const char *url,
+                         const char * const *headers, size_t n_headers) {
+    if (engine == NULL || engine->L == NULL) return -1;
+    lua_State *L = engine->L;
+
+    /* --- URL fields ---------------------------------------------------- */
+    if (url != NULL) {
+        struct http_parser_url u;
+        memset(&u, 0, sizeof(u));
+        if (http_parser_parse_url(url, strlen(url), 0, &u) == 0) {
+            lua_getglobal(L, "wrk");   /* index -1 */
+
+            if (u.field_set & (1 << UF_SCHEMA)) {
+                lua_pushlstring(L, url + u.field_data[UF_SCHEMA].off,
+                                u.field_data[UF_SCHEMA].len);
+                lua_setfield(L, -2, "scheme");
+            }
+            if (u.field_set & (1 << UF_HOST)) {
+                lua_pushlstring(L, url + u.field_data[UF_HOST].off,
+                                u.field_data[UF_HOST].len);
+                lua_setfield(L, -2, "host");
+            }
+            if (u.field_set & (1 << UF_PORT)) {
+                /* Push the pre-converted uint16_t port as a Lua number;
+                 * wrk.lua uses it in string concat ("host" .. ":" .. port)
+                 * which coerces numbers transparently. */
+                lua_pushnumber(L, (lua_Number) u.port);
+                lua_setfield(L, -2, "port");
+            }
+            if (u.field_set & (1 << UF_PATH)) {
+                lua_pushlstring(L, url + u.field_data[UF_PATH].off,
+                                u.field_data[UF_PATH].len);
+                lua_setfield(L, -2, "path");
+            }
+
+            lua_pop(L, 1); /* wrk */
+        }
+    }
+
+    /* --- Custom headers ------------------------------------------------- */
+    if (headers != NULL && n_headers > 0) {
+        lua_getglobal(L, "wrk");         /* index -1: wrk */
+        lua_getfield(L, -1, "headers");  /* index -1: wrk.headers (or nil) */
+        if (!lua_istable(L, -1)) {
+            lua_pop(L, 1);
+            lua_newtable(L);             /* create a fresh headers table */
+            lua_pushvalue(L, -1);        /* dup so we can setfield + keep ref */
+            lua_setfield(L, -3, "headers");
+        }
+        /* Stack: wrk (-2), headers table (-1) */
+        for (size_t i = 0; i < n_headers; i++) {
+            if (headers[i] == NULL) continue;
+            /* Split on first ": " — same rule as legacy script_create. */
+            const char *colon = strchr(headers[i], ':');
+            if (colon == NULL || colon[1] != ' ') continue;
+            size_t key_len = (size_t)(colon - headers[i]);
+            const char *val = colon + 2;
+            lua_pushlstring(L, headers[i], key_len);
+            lua_pushstring(L, val);
+            lua_settable(L, -3);
+        }
+        lua_pop(L, 2); /* headers table + wrk */
+    }
+
+    return 0;
 }
 
 static void lua_init(script_engine *engine, uint64_t thread_id,
@@ -271,13 +356,14 @@ static void lua_destroy(script_engine *engine) {
 }
 
 static script_api lua_api = {
-    .name    = "lua",
-    .create  = lua_create,
-    .init    = lua_init,
-    .request = lua_request,
-    .response = lua_response,
-    .done    = lua_done,
-    .destroy = lua_destroy,
+    .name      = "lua",
+    .create    = lua_create,
+    .configure = lua_configure,   /* ADR 0002 Decision 3 */
+    .init      = lua_init,
+    .request   = lua_request,
+    .response  = lua_response,
+    .done      = lua_done,
+    .destroy   = lua_destroy,
 };
 
 script_api *lua_script_api(void) {

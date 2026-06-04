@@ -159,6 +159,73 @@ void test_done_hook_receives_summary(void) {
 }
 
 /* -------------------------------------------------------------------------
+ * configure slot (ADR 0002 Decision 3)
+ * ---------------------------------------------------------------------- */
+
+void test_configure_sets_url_fields(void) {
+    script_api *api = lua_script_api();
+    TEST_ASSERT_NOT_NULL(api->configure);
+
+    script_engine *e = api->create(NULL);
+    int rc = api->configure(e, "http://bench.example.com:9090/api", NULL, 0);
+    TEST_ASSERT_EQUAL_INT(0, rc);
+
+    lua_State *L = (lua_State *) lua_engine_state(e);
+    lua_getglobal(L, "wrk");
+
+    lua_getfield(L, -1, "scheme");
+    TEST_ASSERT_EQUAL_STRING("http", lua_tostring(L, -1));
+    lua_pop(L, 1);
+
+    lua_getfield(L, -1, "host");
+    TEST_ASSERT_EQUAL_STRING("bench.example.com", lua_tostring(L, -1));
+    lua_pop(L, 1);
+
+    lua_getfield(L, -1, "port");
+    TEST_ASSERT_EQUAL_INT(9090, (int) lua_tonumber(L, -1));
+    lua_pop(L, 1);
+
+    lua_getfield(L, -1, "path");
+    TEST_ASSERT_EQUAL_STRING("/api", lua_tostring(L, -1));
+    lua_pop(L, 1);
+
+    lua_pop(L, 1); /* wrk */
+    api->destroy(e);
+}
+
+void test_configure_installs_headers(void) {
+    script_api *api = lua_script_api();
+    script_engine *e = api->create(NULL);
+
+    const char *hdrs[] = {"X-Foo: bar", "X-Req-Id: 42"};
+    int rc = api->configure(e, "http://localhost/", hdrs, 2);
+    TEST_ASSERT_EQUAL_INT(0, rc);
+
+    lua_State *L = (lua_State *) lua_engine_state(e);
+
+    TEST_ASSERT_EQUAL_INT(0, luaL_dostring(L, "hdr_foo   = wrk.headers['X-Foo']"));
+    TEST_ASSERT_EQUAL_INT(0, luaL_dostring(L, "hdr_reqid = wrk.headers['X-Req-Id']"));
+
+    lua_getglobal(L, "hdr_foo");
+    TEST_ASSERT_EQUAL_STRING("bar", lua_tostring(L, -1));
+    lua_pop(L, 1);
+
+    lua_getglobal(L, "hdr_reqid");
+    TEST_ASSERT_EQUAL_STRING("42", lua_tostring(L, -1));
+    lua_pop(L, 1);
+
+    api->destroy(e);
+}
+
+void test_configure_null_url_is_noop(void) {
+    script_api *api = lua_script_api();
+    script_engine *e = api->create(NULL);
+    /* NULL url and zero headers must not crash and must return 0. */
+    TEST_ASSERT_EQUAL_INT(0, api->configure(e, NULL, NULL, 0));
+    api->destroy(e);
+}
+
+/* -------------------------------------------------------------------------
  * helper registration + glue module (http.name)
  * ---------------------------------------------------------------------- */
 
@@ -224,6 +291,10 @@ int main(void) {
     RUN_TEST(test_response_hook_absent_is_noop);
 
     RUN_TEST(test_done_hook_receives_summary);
+
+    RUN_TEST(test_configure_sets_url_fields);
+    RUN_TEST(test_configure_installs_headers);
+    RUN_TEST(test_configure_null_url_is_noop);
 
     RUN_TEST(test_http_helper_registered_during_init);
 
