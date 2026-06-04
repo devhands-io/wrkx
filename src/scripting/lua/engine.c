@@ -242,6 +242,21 @@ static void lua_init(script_engine *engine, uint64_t thread_id,
      * a glue module — never by including a protocol header (Invariant 3/4). */
     lua_register_http1_helpers(engine);
 
+    /* Call the user setup(thread) hook if defined, passing an empty table as
+     * the thread descriptor.  In the new single-engine architecture there is
+     * one Lua state shared by the main path and done(); calling setup() here
+     * preserves the legacy invariant that setup_called is visible to done(). */
+    lua_getglobal(L, "setup");
+    if (lua_isfunction(L, -1)) {
+        lua_newtable(L);   /* empty thread descriptor */
+        if (lua_pcall(L, 1, 0, 0) != 0) {
+            fprintf(stderr, "setup hook failed: %s\n", lua_tostring(L, -1));
+            lua_pop(L, 1);
+        }
+    } else {
+        lua_pop(L, 1);
+    }
+
     /* Build the default request closure and run the user init hook, mirroring
      * src/wrk.lua's wrk.init(args). The frozen init() carries no argv, so pass
      * an empty args table. */

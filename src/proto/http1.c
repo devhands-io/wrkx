@@ -187,9 +187,12 @@ static proto_status http1_readable(connection *c) {
         }
 
         if (s->complete) {
-            /* A full response arrived. The orchestrator drives the next send;
-             * a non-keep-alive close is handled by reconnecting on its side. */
-            return PROTO_DONE;
+            /* A full response arrived. Return PROTO_DONE_STATUS_ERR for
+             * non-2xx HTTP status codes so the orchestrator can track them;
+             * keep-alive state is unaffected (reconnect is still a wiring
+             * concern). */
+            int sc = s->parser.status_code;
+            return (sc / 100 == 2) ? PROTO_DONE : PROTO_DONE_STATUS_ERR;
         }
 
         if (rs == TRANSPORT_EOF) {

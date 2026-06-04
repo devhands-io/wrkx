@@ -15,7 +15,12 @@
 
 #include <stddef.h>
 
-typedef enum { PROTO_PENDING, PROTO_DONE, PROTO_ERROR } proto_status;
+typedef enum {
+    PROTO_PENDING,            /* response incomplete; more bytes expected     */
+    PROTO_DONE,               /* response complete; application-level success */
+    PROTO_DONE_STATUS_ERR,    /* response complete; non-2xx HTTP status       */
+    PROTO_ERROR               /* transport or parse failure                   */
+} proto_status;
 
 typedef struct connection connection;
 

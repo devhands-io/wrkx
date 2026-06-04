@@ -7,12 +7,24 @@ TARGET  := $(shell uname -s | tr '[A-Z]' '[a-z]' 2>/dev/null || echo unknown)
 # Run ./configure once before the first build; re-run after OS/toolchain changes.
 -include config.mk
 
-SRC  := wrk.c net.c ssl.c aprintf.c stats.c script.c units.c \
-		ae.c zmalloc.c http_parser.c tinymt64.c hdr_histogram.c
-BIN  := wrkx
+# ---------------------------------------------------------------------------
+# Layer source lists (ADR 0001 three-layer architecture, P1-5 wiring).
+# The main wrkx binary is built from these; the old wrk.c / script.c remain
+# available only for the legacy unit-test builds (SCRIPT_DEPS below).
+# ---------------------------------------------------------------------------
+LAYER_SRC := src/main.c src/cli.c \
+             src/orchestrator.c src/rate.c \
+             src/proto/http1.c src/transport.c \
+             src/scripting/lua/engine.c \
+             src/scripting/session.c \
+             src/scripting/lua/http1_helpers.c
 
+COMMON_SRC := src/net.c src/ssl.c src/aprintf.c src/stats.c src/units.c \
+              src/ae.c src/zmalloc.c src/http_parser.c \
+              src/tinymt64.c src/hdr_histogram.c
+
+BIN  := wrkx
 ODIR := obj
-OBJ  := $(patsubst %.c,$(ODIR)/%.o,$(SRC)) $(ODIR)/bytecode.o
 
 LDIR     = deps/luajit/src
 LIBS    := -lluajit $(LIBS)
@@ -26,12 +38,6 @@ clean:
 	$(RM) $(BIN) obj/*
 	@$(MAKE) -C deps/luajit clean
 
-$(BIN): $(OBJ)
-	@echo LINK $(BIN)
-	@$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
-
-$(OBJ): config.h Makefile $(LDIR)/libluajit.a | $(ODIR)
-
 $(ODIR):
 	@mkdir -p $@
 
@@ -39,9 +45,17 @@ $(ODIR)/bytecode.o: src/wrk.lua
 	@echo LUAJIT $<
 	@$(SHELL) -c 'cd $(LDIR) && ./luajit -b $(CURDIR)/$< $(CURDIR)/$@'
 
-$(ODIR)/%.o : %.c
+# Single-shot link (no intermediate .o files for the layer sources; mirrors
+# the unit-test build pattern and avoids obj/proto/, obj/scripting/ dirs).
+$(BIN): $(LAYER_SRC) $(COMMON_SRC) $(ODIR)/bytecode.o $(LDIR)/libluajit.a | $(ODIR)
+	@echo CC+LINK $(BIN)
+	@$(CC) $(CFLAGS) -Isrc -I$(LDIR) $(LDFLAGS) \
+		-o $@ $(LAYER_SRC) $(COMMON_SRC) $(ODIR)/bytecode.o $(LIBS)
+
+# Keep the pattern rule available for any remaining .o targets (bytecode.o).
+$(ODIR)/%.o : src/%.c
 	@echo CC $<
-	@$(CC) $(CFLAGS) -c -o $@ $<
+	@$(CC) $(CFLAGS) -Isrc -c -o $@ $<
 
 $(LDIR)/libluajit.a:
 	@echo Building LuaJIT...

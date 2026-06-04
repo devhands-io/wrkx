@@ -314,6 +314,9 @@ static void socket_readable(aeEventLoop *loop, int fd, void *data, int mask) {
     switch (st) {
         case PROTO_PENDING:
             return;
+        case PROTO_DONE_STATUS_ERR:
+            t->errors.status++;
+            /* fall through: count as complete + record latency */
         case PROTO_DONE:
             complete_response(t, c);
             return;
