@@ -254,7 +254,14 @@ coverage: | $(ODIR)
 			fi; \
 		done'
 
-.PHONY: all clean test test-unit test-e2e test-asan coverage contracts-check test-orchestrator test-http1 test-lua-engine
+# ---------------------------------------------------------------------------
+# ADR 0001 + 0002 compliance guard (t033)
+# ---------------------------------------------------------------------------
+adr-check:
+	@bash scripts/adr-compliance.sh
+
+.PHONY: all clean test test-unit test-e2e test-asan coverage contracts-check \
+        test-orchestrator test-http1 test-lua-engine adr-check
 # test_script is intentionally absent from test-asan (LuaJIT + ASAN conflict)
 .SUFFIXES:
 .SUFFIXES: .c .o .lua

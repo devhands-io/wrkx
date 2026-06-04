@@ -26,6 +26,9 @@ jobs:
       - name: Build
         run: make clean && make
 
+      - name: ADR compliance check
+        run: make adr-check
+
       - name: Unit & E2E tests
         run: make test
 
@@ -57,6 +60,9 @@ jobs:
 
       - name: Build
         run: make clean && make
+
+      - name: ADR compliance check
+        run: make adr-check
 
       - name: Unit & E2E tests
         run: make test
