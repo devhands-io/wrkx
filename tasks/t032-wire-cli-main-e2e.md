@@ -2,24 +2,28 @@ title: Wire CLI + main, full E2E suite green (P1-5)
 status: todo
 adr: 0001
 adr-step: P1-5
-depends: t026, t027, t028
+depends: t030, t031
 
 ## Context
 
-The join point of Phase 1. With the three layers implemented (t026/t027/t028), this
-task wires them together at startup and proves the refactor is behaviour-preserving.
-This is the only Phase 1 task that legitimately touches all three layers — it is the
-wiring, not a layer. See ADR 0001 §"Implementation Sequence" and §"Phase 1 Migration
-Map" (CLI / wiring row).
+The join point of Phase 1. With the three layers implemented (t026/t027/t028) and
+the ADR 0002 contract amendments applied (t029/t030/t031), this task wires everything
+together at startup and proves the refactor is behaviour-preserving. This is the only
+Phase 1 task that legitimately touches all three layers — it is the wiring, not a
+layer. See ADR 0001 §"Implementation Sequence" and §"Phase 1 Migration Map" (CLI /
+wiring row); ADR 0002 §"Implementation Sequence" for the pre-run configure call chain.
 
 ## Scope (Migration-Map symbols this task owns)
 
 - **`src/cli.c` (+ `cli.h`):** `usage`, `longopts[]`, `parse_args`, `copy_url_part`
   → builds an `orchestrator_cfg`.
 - **`src/main.c`:** replaces the stub from t025. Parses args, selects the protocol
-  (HTTP/1.1) and scripting engine (Lua), then calls
-  `orchestrator_create(cfg, protocol, script_engine)` → `orchestrator_run` →
-  `orchestrator_collect` → `orchestrator_destroy`.
+  (HTTP/1.1) and scripting engine (Lua), then:
+  1. Calls `http1_configure(addr, ssl_ctx, host)` (ADR 0002 Decision 2 pattern).
+  2. Calls `api->configure(engine, url, headers, n)` if the slot is non-NULL
+     (ADR 0002 Decision 3).
+  3. Calls `orchestrator_create(cfg, protocol, api, engine)` (ADR 0002 Decision 1).
+  4. Drives `orchestrator_run` → `orchestrator_collect` → `orchestrator_destroy`.
 - Reduce `src/wrk.c` to wiring only, or remove it entirely once all symbols have
   moved per the Migration Map.
 

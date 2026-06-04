@@ -21,4 +21,5 @@ and their consequences.
 
 | ADR | Title | Status | Phase |
 |-----|-------|--------|-------|
-| [0001](0001-three-layer-engine-architecture.md) | Three-Layer Engine Architecture | Accepted | Phase 1 |
+| [0001](0001-three-layer-engine-architecture.md) | Three-Layer Engine Architecture | Accepted  | Phase 1 |
+| [0002](0002-layer-configuration-protocol.md)   | Layer Configuration Protocol    | Accepted  | Phase 1 |

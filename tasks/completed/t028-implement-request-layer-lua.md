@@ -1,5 +1,5 @@
 title: Implement the Request Layer — Lua engine + helpers + session (P1-4)
-status: todo
+status: completed
 adr: 0001
 adr-step: P1-4
 depends: t025

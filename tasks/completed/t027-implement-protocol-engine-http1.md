@@ -1,5 +1,5 @@
 title: Implement the Protocol Engine — transport + HTTP/1.1 (P1-3)
-status: todo
+status: completed
 adr: 0001
 adr-step: P1-3
 depends: t025

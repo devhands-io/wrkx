@@ -1,5 +1,5 @@
 title: Implement the Orchestrator layer (P1-2)
-status: todo
+status: completed
 adr: 0001
 adr-step: P1-2
 depends: t025
