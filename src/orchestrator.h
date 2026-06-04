@@ -2,7 +2,7 @@
 #define ORCHESTRATOR_H
 
 /*
- * Orchestrator layer contract (ADR 0001, Phase 1).
+ * Orchestrator layer contract (ADR 0001, Phase 1; amended by ADR 0002).
  *
  * The Orchestrator ("Tank") owns the thread pool, connection pool, rate
  * controller (with Coordinated-Omission correction), stats aggregation and
@@ -22,6 +22,7 @@
  * hdr_histogram.h respectively. */
 struct hdr_histogram;
 struct protocol;
+struct script_api;     /* ADR 0002: vtable passed to orchestrator_create */
 struct script_engine;
 
 typedef struct orchestrator_cfg {
@@ -45,8 +46,13 @@ typedef struct orchestrator_stats {
  * g_calibrated_threads/g_progress_done globals) is folded in here. */
 typedef struct orchestrator orchestrator;
 
+/* ADR 0002 Decision 1: script_api * (vtable) is passed alongside the engine
+ * so the orchestrator can call all scripting hooks without an extra accessor.
+ * The script_api * is the vtable; script_engine * is the per-run instance
+ * created by api->create().  Unit-test stubs may pass NULL for both. */
 orchestrator      *orchestrator_create(orchestrator_cfg,
                                        struct protocol *,
+                                       const struct script_api *,
                                        struct script_engine *);
 int                orchestrator_run(orchestrator *);
 orchestrator_stats orchestrator_collect(orchestrator *);

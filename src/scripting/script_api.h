@@ -2,7 +2,7 @@
 #define SCRIPT_API_H
 
 /*
- * Request Layer contract (ADR 0001, Phase 1).
+ * Request Layer contract (ADR 0001, Phase 1; amended by ADR 0002).
  *
  * The Request Layer ("Ammo") owns the scripting engine(s), the hook contract
  * (init/request/response/done), per-protocol helper registration and the
@@ -28,6 +28,13 @@ typedef struct script_api {
     const char *name;
 
     script_engine *(*create)(const char *file);
+
+    /* ADR 0002 Decision 3 — called once per engine after create(), before
+     * init().  url is the full target URL (scheme://host:port/path); headers
+     * is an array of n_headers raw strings ("X-Foo: bar"); either may be NULL.
+     * Returns 0 on success.  May be NULL in the vtable; caller checks first. */
+    int (*configure)(script_engine *, const char *url,
+                     const char * const *headers, size_t n_headers);
 
     /* Called once per thread before any requests. */
     void (*init)(script_engine *, uint64_t thread_id, uint64_t connections);
