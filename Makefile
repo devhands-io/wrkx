@@ -92,15 +92,30 @@ ORCH_DEPS     := src/orchestrator.c src/rate.c src/stats.c src/units.c \
                  src/aprintf.c src/zmalloc.c src/tinymt64.c \
                  src/hdr_histogram.c src/ae.c
 
-test-unit: $(TEST_UNIT_BIN) $(TEST_STATS_BIN) $(TEST_UNITS_BIN) $(TEST_HDR_BIN) $(TEST_SCRIPT_BIN)
+TEST_HTTP1_SRC := tests/unit/test_http1.c
+TEST_HTTP1_BIN := obj/test_http1
+# Protocol Engine deps. Deliberately NO libluajit and NO orchestrator: the test
+# feeds raw bytes straight into the http1 readable path over a loopback socket
+# (ADR 0001 Invariant 2 / "a protocol can be tested by feeding it raw bytes").
+HTTP1_DEPS     := src/proto/http1.c src/transport.c src/http_parser.c
+
+test-unit: $(TEST_UNIT_BIN) $(TEST_STATS_BIN) $(TEST_UNITS_BIN) $(TEST_HDR_BIN) $(TEST_SCRIPT_BIN) $(TEST_HTTP1_BIN)
 	@./$(TEST_UNIT_BIN)
 	@./$(TEST_STATS_BIN)
 	@./$(TEST_UNITS_BIN)
 	@./$(TEST_HDR_BIN)
 	@./$(TEST_SCRIPT_BIN)
+	@./$(TEST_HTTP1_BIN)
 
 test-orchestrator: $(TEST_ORCH_BIN)
 	@./$(TEST_ORCH_BIN)
+
+test-http1: $(TEST_HTTP1_BIN)
+	@./$(TEST_HTTP1_BIN)
+
+$(TEST_HTTP1_BIN): $(TEST_HTTP1_SRC) $(UNITY_SRC) $(HTTP1_DEPS) | $(ODIR)
+	@$(CC) $(CFLAGS) $(UNITY_INC) -Isrc $(LDFLAGS) \
+		-o $@ $^ $(filter -L%,$(LIBS)) -lssl -lcrypto -lpthread
 
 $(TEST_ORCH_BIN): $(TEST_ORCH_SRC) $(UNITY_SRC) $(ORCH_DEPS) | $(ODIR)
 	@$(CC) $(CFLAGS) $(UNITY_INC) -Isrc -DUNITY_INCLUDE_DOUBLE \
@@ -203,7 +218,7 @@ coverage: | $(ODIR)
 			fi; \
 		done'
 
-.PHONY: all clean test test-unit test-e2e test-asan coverage contracts-check test-orchestrator
+.PHONY: all clean test test-unit test-e2e test-asan coverage contracts-check test-orchestrator test-http1
 # test_script is intentionally absent from test-asan (LuaJIT + ASAN conflict)
 .SUFFIXES:
 .SUFFIXES: .c .o .lua
