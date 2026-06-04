@@ -83,12 +83,29 @@ SCRIPT_DEPS     := src/script.c src/http_parser.c src/stats.c \
                    src/zmalloc.c src/tinymt64.c src/hdr_histogram.c \
                    src/aprintf.c src/net.c src/ssl.c src/ae.c
 
+TEST_ORCH_SRC := tests/unit/test_orchestrator.c
+TEST_ORCH_BIN := obj/test_orchestrator
+# Orchestrator layer deps. Deliberately NO libluajit and NO protocol/engine
+# implementation: the test supplies a stub protocol and a NULL script engine
+# (ADR 0001 Invariant 1 / testability consequence).
+ORCH_DEPS     := src/orchestrator.c src/rate.c src/stats.c src/units.c \
+                 src/aprintf.c src/zmalloc.c src/tinymt64.c \
+                 src/hdr_histogram.c src/ae.c
+
 test-unit: $(TEST_UNIT_BIN) $(TEST_STATS_BIN) $(TEST_UNITS_BIN) $(TEST_HDR_BIN) $(TEST_SCRIPT_BIN)
 	@./$(TEST_UNIT_BIN)
 	@./$(TEST_STATS_BIN)
 	@./$(TEST_UNITS_BIN)
 	@./$(TEST_HDR_BIN)
 	@./$(TEST_SCRIPT_BIN)
+
+test-orchestrator: $(TEST_ORCH_BIN)
+	@./$(TEST_ORCH_BIN)
+
+$(TEST_ORCH_BIN): $(TEST_ORCH_SRC) $(UNITY_SRC) $(ORCH_DEPS) | $(ODIR)
+	@$(CC) $(CFLAGS) $(UNITY_INC) -Isrc -DUNITY_INCLUDE_DOUBLE \
+		-include tests/unit/platform_compat.h \
+		-o $@ $^ -lm -lpthread
 
 $(TEST_UNIT_BIN): $(TEST_UNIT_SRC) $(UNITY_SRC) | $(ODIR)
 	@$(CC) $(CFLAGS) $(UNITY_INC) -o $@ $^
@@ -186,7 +203,7 @@ coverage: | $(ODIR)
 			fi; \
 		done'
 
-.PHONY: all clean test test-unit test-e2e test-asan coverage contracts-check
+.PHONY: all clean test test-unit test-e2e test-asan coverage contracts-check test-orchestrator
 # test_script is intentionally absent from test-asan (LuaJIT + ASAN conflict)
 .SUFFIXES:
 .SUFFIXES: .c .o .lua
