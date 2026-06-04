@@ -86,17 +86,23 @@ static void usage() {
            "  Time arguments may include a time unit (2s, 2m, 2h)\n");
 }
 
-static void *progress_main(void *arg) {
-    uint64_t stop_at   = *(uint64_t *)arg;
-    int      bar_width = 20;
-    uint64_t n_threads = cfg.threads;
-    uint64_t cal_total = CALIBRATE_DELAY_MS / 1000;  /* calibration seconds */
+typedef struct {
+    uint64_t  stop_at;
+    thread   *threads;
+    uint64_t  n_threads;
+} progress_arg;
+
+static void *progress_main(void *raw) {
+    progress_arg *arg      = raw;
+    uint64_t      stop_at  = arg->stop_at;
+    int           bar_width = 20;
+    uint64_t      n_threads = arg->n_threads;
+    uint64_t      cal_total = CALIBRATE_DELAY_MS / 1000;  /* calibration seconds */
 
     /* ------------------------------------------------------------------ *
-     * Phase 1 — Calibration bar                                          *
-     * Uses \n (scrolling) not \r because the interleaved                 *
-     * "Thread calibration:" messages also emit \n; mixing \r and \n     *
-     * would corrupt the display.                                         *
+     * Phase 1 — Calibration bar (\r-based, rewrites a single line).     *
+     * Thread calibration messages are buffered in thread->cal_msg and    *
+     * flushed after all threads finish (Phase 2), avoiding interleave.  *
      * Exits early if all threads finish calibrating before the timer.   *
      * ------------------------------------------------------------------ */
     for (uint64_t s = 0; s <= cal_total; s++) {
@@ -107,13 +113,13 @@ static void *progress_main(void *arg) {
         double   pct    = (double)s / (double)cal_total;
         int      filled = (int)(pct * bar_width);
 
-        printf("  Calibrating: [");
+        printf("\r  Calibrating: [");
         for (int i = 0; i < bar_width; i++) {
             if      (i < filled)               putchar('=');
             else if (i == filled && pct < 1.0) putchar('>');
             else                               putchar(' ');
         }
-        printf("] %3d%% (%" PRIu64 "s / %" PRIu64 "s)\n",
+        printf("] %3d%% (%" PRIu64 "s / %" PRIu64 "s)  ",
                (int)(pct * 100.0), s, cal_total);
         fflush(stdout);
 
@@ -122,11 +128,23 @@ static void *progress_main(void *arg) {
     }
 
     /* ------------------------------------------------------------------ *
-     * Phase 2 — Wait for any straggler threads (typically instant now)  *
+     * Phase 2 — Wait for any straggler threads (typically instant now). *
+     * Then clear the bar line and flush all buffered cal_msg strings.   *
      * ------------------------------------------------------------------ */
     while (!g_progress_done &&
            __sync_fetch_and_add(&g_calibrated_threads, 0) < (int)n_threads)
         usleep(100000);
+
+    /* clear bar line */
+    printf("\r%60s\r", "");
+    fflush(stdout);
+
+    /* flush buffered calibration messages (one per thread) */
+    for (uint64_t i = 0; i < n_threads; i++) {
+        if (arg->threads[i].cal_msg[0])
+            printf("%s\n", arg->threads[i].cal_msg);
+    }
+    fflush(stdout);
 
     if (g_progress_done) return NULL;
 
@@ -136,7 +154,6 @@ static void *progress_main(void *arg) {
     uint64_t bar_start = time_us();
     uint64_t total_us  = stop_at > bar_start ? stop_at - bar_start : 1;
 
-    printf("\n");  /* blank line separating calibration output from run bar */
     fflush(stdout);
 
     while (!g_progress_done) {
@@ -278,8 +295,9 @@ int main(int argc, char **argv) {
     struct hdr_histogram* u_latency_histogram;
     hdr_init(1, MAX_LATENCY, 3, &u_latency_histogram);
 
+    progress_arg parg = { stop_at, threads, cfg.threads };
     pthread_t progress_thread;
-    pthread_create(&progress_thread, NULL, progress_main, &stop_at);
+    pthread_create(&progress_thread, NULL, progress_main, &parg);
 
     for (uint64_t i = 0; i < cfg.threads; i++) {
         thread *t = &threads[i];
@@ -483,10 +501,10 @@ static int calibrate(aeEventLoop *loop, long long id, void *data) {
     thread->interval = interval;
     thread->requests = 0;
 
-    printf("  Thread calibration: mean lat.: %.3fms, rate sampling interval: %dms\n",
-            (thread->mean)/1000.0,
-            thread->interval);
-    fflush(stdout);
+    snprintf(thread->cal_msg, sizeof(thread->cal_msg),
+             "  Thread calibration: mean lat.: %.3fms, rate sampling interval: %dms",
+             (thread->mean)/1000.0,
+             thread->interval);
     __sync_fetch_and_add(&g_calibrated_threads, 1);
 
     aeCreateTimeEvent(loop, thread->interval, sample_rate, thread, NULL);

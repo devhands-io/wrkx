@@ -45,6 +45,7 @@ typedef struct {
     lua_State *L;
     errors errors;
     struct connection *cs;
+    char cal_msg[128];  /* buffered calibration summary, printed after bar */
 } thread;
 
 typedef struct {
