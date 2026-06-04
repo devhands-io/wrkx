@@ -165,14 +165,14 @@ void test_create_destroy(void) {
     orchestrator_cfg cfg = {
         .connections = 2, .threads = 1, .duration_us = 0, .rate = 1000
     };
-    orchestrator *o = orchestrator_create(cfg, &stub_proto, NULL);
+    orchestrator *o = orchestrator_create(cfg, &stub_proto, NULL, NULL);
     TEST_ASSERT_NOT_NULL(o);
     orchestrator_destroy(o);
 }
 
 void test_create_null_proto_fails(void) {
     orchestrator_cfg cfg = { .connections = 1, .threads = 1, .rate = 1 };
-    TEST_ASSERT_NULL(orchestrator_create(cfg, NULL, NULL));
+    TEST_ASSERT_NULL(orchestrator_create(cfg, NULL, NULL, NULL));
 }
 
 void test_run_drives_protocol_and_collects(void) {
@@ -182,7 +182,7 @@ void test_run_drives_protocol_and_collects(void) {
         .duration_us = 200000,   /* 200 ms */
         .rate        = 100000,   /* high rate so we are always "behind"      */
     };
-    orchestrator *o = orchestrator_create(cfg, &stub_proto, NULL);
+    orchestrator *o = orchestrator_create(cfg, &stub_proto, NULL, NULL);
     TEST_ASSERT_NOT_NULL(o);
 
     int rc = orchestrator_run(o);

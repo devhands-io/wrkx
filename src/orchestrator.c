@@ -485,6 +485,7 @@ static void print_stats(const char *name, stats *s, char *(*fmt)(long double)) {
 
 orchestrator *orchestrator_create(orchestrator_cfg cfg,
                                   protocol *proto,
+                                  const script_api *api,
                                   script_engine *engine) {
     if (!proto) return NULL;
     if (cfg.threads == 0) cfg.threads = 1;
@@ -497,11 +498,10 @@ orchestrator *orchestrator_create(orchestrator_cfg cfg,
     o->cfg    = cfg;
     o->proto  = proto;
     o->engine = engine;
-    /* The script_api vtable is reached through the engine. In Phase 1 the CLI
-     * wiring (P1-5) supplies a matched (engine, api) pair; the engine pointer
-     * here doubles as the api carrier only if the wiring uses an api-bearing
-     * type. The orchestrator treats a NULL api as "no script" (stub tests). */
-    o->api    = NULL;
+    /* ADR 0002 Decision 1: script_api * is now passed explicitly at creation
+     * time. NULL is valid (unit-test stub path); all callers that guard on
+     * o->api remain correct. */
+    o->api    = api;
     o->record_all_responses = true;
     o->timeout_ms = DEFAULT_TIMEOUT_MS;
     o->stop = 0;
