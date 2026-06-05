@@ -113,6 +113,12 @@ TEST_HTTP1_BIN := obj/test_http1
 # (ADR 0001 Invariant 2 / "a protocol can be tested by feeding it raw bytes").
 HTTP1_DEPS     := src/proto/http1.c src/transport.c src/http_parser.c
 
+TEST_CLI_SRC := tests/unit/test_cli.c
+TEST_CLI_BIN := obj/test_cli
+# cli.c depends on ae.h (for aeGetApiName in -v output) and units.h.
+CLI_TEST_DEPS := src/cli.c src/http_parser.c src/units.c src/aprintf.c \
+                 src/zmalloc.c src/ae.c
+
 TEST_LUA_ENGINE_SRC := tests/unit/test_lua_engine.c
 TEST_LUA_ENGINE_BIN := obj/test_lua_engine
 # Request Layer deps (ADR 0001 P1-4). Links LuaJIT (+ bytecode.o for the wrk
@@ -123,14 +129,18 @@ LUA_ENGINE_DEPS := src/scripting/lua/engine.c src/scripting/session.c \
                    src/scripting/lua/http1_helpers.c \
                    src/proto/http1.c src/transport.c src/http_parser.c
 
-test-unit: $(TEST_UNIT_BIN) $(TEST_STATS_BIN) $(TEST_UNITS_BIN) $(TEST_HDR_BIN) $(TEST_SCRIPT_BIN) $(TEST_HTTP1_BIN) $(TEST_LUA_ENGINE_BIN)
+test-unit: $(TEST_UNIT_BIN) $(TEST_STATS_BIN) $(TEST_UNITS_BIN) $(TEST_HDR_BIN) $(TEST_SCRIPT_BIN) $(TEST_HTTP1_BIN) $(TEST_CLI_BIN) $(TEST_LUA_ENGINE_BIN)
 	@./$(TEST_UNIT_BIN)
 	@./$(TEST_STATS_BIN)
 	@./$(TEST_UNITS_BIN)
 	@./$(TEST_HDR_BIN)
 	@./$(TEST_SCRIPT_BIN)
 	@./$(TEST_HTTP1_BIN)
+	@./$(TEST_CLI_BIN)
 	@./$(TEST_LUA_ENGINE_BIN)
+
+test-cli: $(TEST_CLI_BIN)
+	@./$(TEST_CLI_BIN)
 
 test-orchestrator: $(TEST_ORCH_BIN)
 	@./$(TEST_ORCH_BIN)
@@ -148,6 +158,11 @@ $(TEST_LUA_ENGINE_BIN): $(TEST_LUA_ENGINE_SRC) $(UNITY_SRC) $(LUA_ENGINE_DEPS) \
 	@$(CC) $(CFLAGS) $(UNITY_INC) -Isrc -I$(LDIR) \
 		-o $@ $(TEST_LUA_ENGINE_SRC) $(UNITY_SRC) $(LUA_ENGINE_DEPS) \
 		$(ODIR)/bytecode.o $(LDFLAGS) $(LIBS)
+
+$(TEST_CLI_BIN): $(TEST_CLI_SRC) $(UNITY_SRC) $(CLI_TEST_DEPS) | $(ODIR)
+	@$(CC) $(CFLAGS) $(UNITY_INC) -Isrc \
+		-o $@ $(TEST_CLI_SRC) $(UNITY_SRC) $(CLI_TEST_DEPS) \
+		$(LDFLAGS) -lpthread -lm
 
 $(TEST_HTTP1_BIN): $(TEST_HTTP1_SRC) $(UNITY_SRC) $(HTTP1_DEPS) | $(ODIR)
 	@$(CC) $(CFLAGS) $(UNITY_INC) -Isrc $(LDFLAGS) \
@@ -186,6 +201,7 @@ test-e2e:
 	@bash tests/e2e/lua_hooks.sh
 	@bash tests/e2e/lua_post.sh
 	@bash tests/e2e/lua_dynamic.sh
+	@bash tests/e2e/cli_output.sh
 # ---------------------------------------------------------------------------
 # ASAN + UBSan unit tests
 # NOTE: the full wrkx binary is NOT instrumented here — LuaJIT's custom
@@ -261,7 +277,7 @@ adr-check:
 	@bash scripts/adr-compliance.sh
 
 .PHONY: all clean test test-unit test-e2e test-asan coverage contracts-check \
-        test-orchestrator test-http1 test-lua-engine adr-check
+        test-cli test-orchestrator test-http1 test-lua-engine adr-check
 # test_script is intentionally absent from test-asan (LuaJIT + ASAN conflict)
 .SUFFIXES:
 .SUFFIXES: .c .o .lua
