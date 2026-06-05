@@ -187,23 +187,28 @@ static proto_status http1_readable(connection *c) {
         }
 
         if (s->complete) {
-            /* A full response arrived. Return PROTO_DONE_STATUS_ERR for
-             * non-2xx HTTP status codes so the orchestrator can track them. */
+            /* A full response arrived. Classify (ADR 0003-B):
+             *   - non-2xx          -> PROTO_DONE_STATUS_ERR (status takes
+             *                         priority; the orchestrator counts it)
+             *   - 2xx, peer closing -> PROTO_DONE_CLOSE (server sent
+             *                         Connection: close or HTTP/1.0 w/o
+             *                         keep-alive; orchestrator reconnects
+             *                         cleanly without a read error)
+             *   - 2xx, keep-alive   -> PROTO_DONE */
             int sc = s->parser.status_code;
-            proto_status result =
-                (sc / 100 == 2) ? PROTO_DONE : PROTO_DONE_STATUS_ERR;
+            proto_status result;
+            if (sc / 100 != 2)        result = PROTO_DONE_STATUS_ERR;
+            else if (!s->keep_alive)  result = PROTO_DONE_CLOSE;
+            else                      result = PROTO_DONE;
 
             /* Consume the completion so a *subsequent* readable event on this
-             * connection does not re-report the same response. This is critical
-             * on Connection: close servers, where an EOF readable event fires
-             * immediately after the response: without consuming, s->complete
-             * stays true and the level-triggered EOF re-enters here on every
-             * loop iteration, returning a phantom PROTO_DONE each time. That
-             * double-counts completions and corrupts rate pacing (the request
-             * count explodes while no bytes move). Reinitialise the parser for
-             * the next response on this (kept-alive) connection; if the peer
-             * actually closed, the next read returns EOF -> PROTO_ERROR ->
-             * the orchestrator reconnects. */
+             * connection does not re-report the same response (the t036
+             * phantom-completion flood). On a Connection: close server an EOF
+             * readable event fires immediately after the response; without
+             * consuming, s->complete stays true and the level-triggered EOF
+             * re-enters here every loop iteration. Reinitialise the parser for
+             * the next response on a kept-alive connection. For PROTO_DONE_CLOSE
+             * the orchestrator reconnects, so the reinit is harmless. */
             s->complete = false;
             http_parser_init(&s->parser, HTTP_RESPONSE);
             s->parser.data = s;

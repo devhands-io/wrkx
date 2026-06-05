@@ -19,6 +19,9 @@ typedef enum {
     PROTO_PENDING,            /* response incomplete; more bytes expected     */
     PROTO_DONE,               /* response complete; application-level success */
     PROTO_DONE_STATUS_ERR,    /* response complete; non-2xx HTTP status       */
+    PROTO_DONE_CLOSE,         /* response complete; peer is closing (no
+                               * keep-alive) — orchestrator must reconnect
+                               * cleanly, NOT count a read error (ADR 0003-B) */
     PROTO_ERROR               /* transport or parse failure                   */
 } proto_status;
 

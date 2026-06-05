@@ -134,9 +134,28 @@ static const char COMPLETE_RESP[] =
     "\r\n"
     "hello";
 
+/* A complete 2xx response that asks the peer to close the connection. */
+static const char CLOSE_RESP[] =
+    "HTTP/1.1 200 OK\r\n"
+    "Content-Length: 5\r\n"
+    "Connection: close\r\n"
+    "\r\n"
+    "hello";
+
 void test_complete_response_is_done(void) {
     server_send(COMPLETE_RESP, sizeof(COMPLETE_RESP) - 1);
     TEST_ASSERT_EQUAL_INT(PROTO_DONE, drive_readable());
+}
+
+/*
+ * Regression test for ADR 0003-B: a complete 2xx response carrying
+ * "Connection: close" must report PROTO_DONE_CLOSE (so the orchestrator
+ * reconnects cleanly) — not PROTO_DONE (which would re-use a closing socket
+ * and surface a spurious read error on the following EOF).
+ */
+void test_connection_close_reports_done_close(void) {
+    server_send(CLOSE_RESP, sizeof(CLOSE_RESP) - 1);
+    TEST_ASSERT_EQUAL_INT(PROTO_DONE_CLOSE, drive_readable());
 }
 
 void test_partial_headers_are_pending(void) {
@@ -250,6 +269,7 @@ int main(void) {
 
     UNITY_BEGIN();
     RUN_TEST(test_complete_response_is_done);
+    RUN_TEST(test_connection_close_reports_done_close);
     RUN_TEST(test_partial_headers_are_pending);
     RUN_TEST(test_partial_body_is_pending);
     RUN_TEST(test_pending_then_done_across_reads);

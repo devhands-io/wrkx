@@ -269,8 +269,13 @@ static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
     }
 }
 
-static void complete_response(othread *t, oconn *c) {
-    protocol *p = t->orch->proto;
+/*
+ * Record one completed response: count it, record corrected/uncorrected
+ * latency, notify the Request Layer. Returns true if the run should continue,
+ * false if it should stop (now past stop_at, or a drain was requested) — in
+ * which case the caller must not re-arm or reconnect.
+ */
+static bool record_response(othread *t, oconn *c) {
     orchestrator *o = t->orch;
     uint64_t now = time_us();
 
@@ -283,7 +288,7 @@ static void complete_response(othread *t, oconn *c) {
     c->in_flight = false;
 
     /* The orchestrator core sends one request per batch (pipelining is a
-     * protocol concern handled inside proto->readable), so every PROTO_DONE
+     * protocol concern handled inside proto->readable), so every completion
      * corresponds to one recordable latency sample. record_all_responses is
      * retained for parity with the -B batch-latency option once pipelining is
      * reintroduced at the protocol layer. */
@@ -297,12 +302,27 @@ static void complete_response(othread *t, oconn *c) {
 
     if (now >= t->stop_at || o->stop) {
         aeStop(t->loop);
-        return;
+        return false;
     }
+    return true;
+}
 
-    /* Re-arm the writeable event to send the next request. */
-    aeCreateFileEvent(t->loop, c->conn.fd, AE_WRITABLE, socket_writeable, c);
-    (void)p;
+/* Completion on a kept-alive connection: record, then re-arm the writer to
+ * send the next request on the same socket. */
+static void complete_response(othread *t, oconn *c) {
+    if (record_response(t, c))
+        aeCreateFileEvent(t->loop, c->conn.fd, AE_WRITABLE, socket_writeable, c);
+}
+
+/*
+ * Completion where the peer signalled close (ADR 0003-B). Record the response,
+ * then reconnect cleanly — this is an expected, graceful close (e.g. nginx
+ * keepalive_requests limit), NOT a transport error, so errors.read is NOT
+ * incremented. Mirrors phase-0 wrk.c's reconnect-on-!keep_alive.
+ */
+static void complete_response_close(othread *t, oconn *c) {
+    if (record_response(t, c))
+        oc_reconnect(t, c);
 }
 
 static void socket_readable(aeEventLoop *loop, int fd, void *data, int mask) {
@@ -320,6 +340,11 @@ static void socket_readable(aeEventLoop *loop, int fd, void *data, int mask) {
             /* fall through: count as complete + record latency */
         case PROTO_DONE:
             complete_response(t, c);
+            return;
+        case PROTO_DONE_CLOSE:
+            /* Graceful server close after a successful response: record and
+             * reconnect cleanly, without counting a read error. */
+            complete_response_close(t, c);
             return;
         case PROTO_ERROR:
         default:

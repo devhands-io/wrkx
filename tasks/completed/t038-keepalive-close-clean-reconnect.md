@@ -1,5 +1,5 @@
 title: Handle server keep-alive close cleanly (PROTO_DONE_CLOSE) — stop spurious read errors
-status: todo
+status: completed
 adr: 0003
 adr-step: B
 depends: t027, t036
