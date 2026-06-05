@@ -14,6 +14,7 @@
  * header other than proto.h and script_api.h.
  */
 
+#include <stdbool.h>
 #include <stdint.h>
 
 /* Pointer-only references — kept decoupled via forward declarations so this
@@ -30,6 +31,9 @@ typedef struct orchestrator_cfg {
     uint64_t threads;
     uint64_t duration_us;
     uint64_t rate;
+    bool     latency;           /* -L: print HdrHistogram with full spectrum    */
+    bool     latency_dist_only; /* -l: print distribution, no detailed spectrum */
+    bool     u_latency;         /* -U: print uncorrected latency distribution   */
 } orchestrator_cfg;
 
 typedef struct orchestrator_stats {

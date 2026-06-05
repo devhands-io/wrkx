@@ -26,8 +26,9 @@ typedef struct cli_args {
     char   **headers;       /* -H: array of raw "Key: value" strings          */
     int      n_headers;     /* number of valid entries in headers             */
 
-    bool     latency;       /* -L: print HdrHistogram latency distribution    */
-    bool     u_latency;     /* -U: print uncorrected latency distribution     */
+    bool     latency;           /* -L: print HdrHistogram with full spectrum     */
+    bool     latency_dist_only; /* -l: print distribution, no detailed spectrum  */
+    bool     u_latency;         /* -U: print uncorrected latency distribution    */
 } cli_args;
 
 /*

@@ -18,6 +18,7 @@
 
 #include "http_parser.h"
 #include "units.h"
+#include "ae.h"
 
 /* -------------------------------------------------------------------------
  * URL parsing helper (ported from wrk.c copy_url_part)
@@ -60,6 +61,7 @@ static struct option longopts[] = {
     { "script",        required_argument, NULL, 's' },
     { "header",        required_argument, NULL, 'H' },
     { "latency",       no_argument,       NULL, 'L' },
+    { "l_latency",     no_argument,       NULL, 'l' },
     { "u_latency",     no_argument,       NULL, 'U' },
     { "timeout",       required_argument, NULL, 'T' },
     { "rate",          required_argument, NULL, 'R' },
@@ -74,19 +76,25 @@ static struct option longopts[] = {
 
 void cli_usage(const char *program) {
     fprintf(stderr,
-        "Usage: %s <options> <url>\n"
-        "  Options:\n"
-        "    -c, --connections <N>  Connections to keep open\n"
-        "    -d, --duration    <T>  Duration of test (e.g. 10s, 2m, 1h)\n"
-        "    -t, --threads     <N>  Number of threads to use\n"
-        "    -s, --script      <S>  Load Lua script file\n"
-        "    -H, --header      <H>  Add header to request\n"
-        "    -L, --latency          Print latency distribution (HdrHistogram)\n"
-        "    -U, --u_latency        Print uncorrected latency statistics\n"
-        "        --timeout     <T>  Socket/request timeout\n"
-        "    -R, --rate        <T>  Work rate (requests/sec)\n"
-        "    -v, --version          Print version and exit\n"
-        "    -h, --help             Show this help\n",
+        "Usage: %s <options> <url>                           \n"
+        "  Options:                                          \n"
+        "    -c, --connections <N>  Connections to keep open \n"
+        "    -d, --duration    <T>  Duration of test         \n"
+        "    -t, --threads     <N>  Number of threads to use \n"
+        "    -s, --script      <S>  Load Lua script file     \n"
+        "    -H, --header      <H>  Add header to request    \n"
+        "    -L  --latency          Print latency statistics \n"
+        "    -l  --l_latency        Print latency distribution\n"
+        "                           (no detailed spectrum)   \n"
+        "    -U  --u_latency        Print uncorrected latency statistics\n"
+        "        --timeout     <T>  Socket/request timeout   \n"
+        "    -v, --version          Print version details    \n"
+        "    -R, --rate        <T>  work rate (throughput)   \n"
+        "                           in requests/sec (total)  \n"
+        "                           [Required Parameter]     \n"
+        "                                                    \n"
+        "  Numeric arguments may include a SI unit (1k, 1M, 1G)\n"
+        "  Time arguments may include a time unit (2s, 2m, 2h)\n",
         program ? program : "wrkx");
 }
 
@@ -100,13 +108,14 @@ int cli_parse_args(int argc, char **argv, cli_args *out) {
     out->script          = NULL;
     out->n_headers       = 0;
     out->latency         = false;
+    out->latency_dist_only = false;
     out->u_latency       = false;
 
     uint64_t timeout_ms  = 2000;   /* SOCKET_TIMEOUT_MS */
     uint64_t duration_s  = 10;
     int c;
 
-    while ((c = getopt_long(argc, argv, "c:d:t:s:H:LUT:R:vh?", longopts, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "c:d:t:s:H:LlUT:R:vh?", longopts, NULL)) != -1) {
         switch (c) {
             case 'c':
                 if (scan_metric(optarg, &out->cfg.connections)) {
@@ -137,6 +146,10 @@ int cli_parse_args(int argc, char **argv, cli_args *out) {
             case 'L':
                 out->latency = true;
                 break;
+            case 'l':
+                out->latency = true;
+                out->latency_dist_only = true;
+                break;
             case 'U':
                 out->u_latency = true;
                 break;
@@ -154,7 +167,8 @@ int cli_parse_args(int argc, char **argv, cli_args *out) {
                 }
                 break;
             case 'v':
-                printf("wrkx %s\n", CLI_VERSION);
+                printf("wrkx %s [%s] ", CLI_VERSION, aeGetApiName());
+                printf("Credits: Will Glozer (wrk), Gil Tene (wrk2)\n");
                 exit(0);
             case 'h':
             case '?':

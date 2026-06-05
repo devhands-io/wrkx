@@ -21,6 +21,7 @@
 #include <signal.h>
 #include <pthread.h>
 #include <inttypes.h>
+#include <unistd.h>
 
 #include "orchestrator.h"
 #include "proto/proto.h"
@@ -482,6 +483,108 @@ static void print_stats(const char *name, stats *s, char *(*fmt)(long double)) {
     printf("%8.2Lf%%\n", stats_within_stdev(s, mean, stdev, 1));
 }
 
+static void print_hdr_latency(struct hdr_histogram *h, const char *desc,
+                               bool print_spectrum) {
+    long double pcts[] = { 50.0, 75.0, 90.0, 99.0, 99.9, 99.99, 99.999, 100.0 };
+    printf("  Latency Distribution (HdrHistogram - %s)\n", desc);
+    for (size_t i = 0; i < sizeof(pcts) / sizeof(pcts[0]); i++) {
+        int64_t n = hdr_value_at_percentile(h, (double)pcts[i]);
+        printf("%7.3Lf%%", pcts[i]);
+        print_units((long double)n, format_time_us, 10);
+        printf("\n");
+    }
+    if (print_spectrum) {
+        printf("\n%s\n", "  Detailed Percentile spectrum:");
+        hdr_percentiles_print(h, stdout, 5, 1000.0, CLASSIC);
+    }
+}
+
+/* -------------------------------------------------------------------------
+ * Progress thread: calibration bar → run bar (ported from wrk.c)
+ * ---------------------------------------------------------------------- */
+
+typedef struct {
+    orchestrator *o;
+    uint64_t      stop_at;
+    volatile int  done;
+} oprg_arg;
+
+static void *progress_main(void *raw) {
+    oprg_arg     *arg       = raw;
+    orchestrator *o         = arg->o;
+    int           bar_width = 20;
+    uint64_t      n         = o->n_threads;
+    uint64_t      cal_total = CALIBRATE_DELAY_MS / 1000;
+
+    /* Phase 1 — calibration bar */
+    for (uint64_t s = 0; s <= cal_total; s++) {
+        if (arg->done) return NULL;
+        if (__sync_fetch_and_add(&o->calibrated_threads, 0) >= (int)n)
+            break;
+
+        double pct    = (double)s / (double)cal_total;
+        int    filled = (int)(pct * bar_width);
+        printf("\r  Calibrating: [");
+        for (int i = 0; i < bar_width; i++) {
+            if      (i < filled)               putchar('=');
+            else if (i == filled && pct < 1.0) putchar('>');
+            else                               putchar(' ');
+        }
+        printf("] %3d%% (%" PRIu64 "s / %" PRIu64 "s)  ",
+               (int)(pct * 100.0), s, cal_total);
+        fflush(stdout);
+        if (s == cal_total) break;
+        sleep(1);
+    }
+
+    /* Phase 2 — wait for stragglers, flush cal messages */
+    while (!arg->done &&
+           __sync_fetch_and_add(&o->calibrated_threads, 0) < (int)n)
+        usleep(100000);
+
+    printf("\r%60s\r", "");
+    fflush(stdout);
+    for (uint64_t i = 0; i < n; i++) {
+        if (o->threads[i].cal_msg[0])
+            printf("%s\n", o->threads[i].cal_msg);
+    }
+    fflush(stdout);
+
+    if (arg->done) return NULL;
+
+    /* Phase 3 — run bar */
+    uint64_t bar_start = time_us();
+    uint64_t total_us  = arg->stop_at > bar_start ? arg->stop_at - bar_start : 1;
+
+    while (!arg->done) {
+        uint64_t now     = time_us();
+        uint64_t elapsed = now > bar_start ? now - bar_start : 0;
+        if (elapsed > total_us) elapsed = total_us;
+
+        double   pct    = (double)elapsed / (double)total_us;
+        int      filled = (int)(pct * bar_width);
+        uint64_t el_s   = elapsed  / 1000000;
+        uint64_t tot_s  = total_us / 1000000;
+
+        printf("\r  Progress: [");
+        for (int i = 0; i < bar_width; i++) {
+            if      (i < filled)               putchar('=');
+            else if (i == filled && pct < 1.0) putchar('>');
+            else                               putchar(' ');
+        }
+        printf("] %3d%% (%" PRIu64 "s / %" PRIu64 "s)  ",
+               (int)(pct * 100.0), el_s, tot_s);
+        fflush(stdout);
+
+        if (pct >= 1.0) break;
+        sleep(1);
+    }
+
+    printf("\r%60s\r", "");
+    fflush(stdout);
+    return NULL;
+}
+
 /* ------------------------------------------------------------------------- */
 /* Public API                                                                */
 /* ------------------------------------------------------------------------- */
@@ -561,6 +664,10 @@ int orchestrator_run(orchestrator *o) {
     sigfillset(&sa.sa_mask);
     sigaction(SIGINT, &sa, NULL);
 
+    oprg_arg parg = { o, stop_at, 0 };
+    pthread_t progress_thread;
+    pthread_create(&progress_thread, NULL, progress_main, &parg);
+
     for (uint64_t i = 0; i < o->n_threads; i++) {
         othread *t = &o->threads[i];
         t->stop_at = stop_at;
@@ -572,6 +679,9 @@ int orchestrator_run(orchestrator *o) {
 
     for (uint64_t i = 0; i < o->n_threads; i++)
         pthread_join(o->threads[i].thread, NULL);
+
+    parg.done = 1;
+    pthread_join(progress_thread, NULL);
 
     uint64_t elapsed = time_us() - o->start_us;
 
@@ -612,6 +722,21 @@ int orchestrator_run(orchestrator *o) {
             print_stats_header();
             print_stats("Latency", latency_stats, format_time_us);
             print_stats("Req/Sec", o->rps, format_metric);
+
+            if (o->cfg.latency) {
+                print_hdr_latency(o->latency_histogram,
+                                  "Recorded Latency",
+                                  !o->cfg.latency_dist_only);
+                printf("----------------------------------------------------------\n");
+            }
+            if (o->cfg.u_latency) {
+                printf("\n");
+                print_hdr_latency(o->u_latency_histogram,
+                                  "Uncorrected Latency (measured without taking "
+                                  "delayed starts into account)",
+                                  !o->cfg.latency_dist_only);
+                printf("----------------------------------------------------------\n");
+            }
 
             long double runtime_s = elapsed / 1000000.0;
             long double req_per_s = runtime_s > 0 ? complete / runtime_s : 0;

@@ -30,7 +30,6 @@
 #include "scripting/lua/engine.h"
 #include "units.h"
 #include "http_parser.h"
-#include "hdr_histogram.h"
 
 /* ssl_init() from ssl.c — declared directly to avoid ssl.h → net.h → wrk.h */
 extern SSL_CTX *ssl_init(void);
@@ -138,6 +137,10 @@ int main(int argc, char **argv) {
            args.cfg.threads, args.cfg.connections);
     free(runtime_msg);
 
+    args.cfg.latency           = args.latency;
+    args.cfg.latency_dist_only = args.latency_dist_only;
+    args.cfg.u_latency         = args.u_latency;
+
     orchestrator *o = orchestrator_create(args.cfg, http1_protocol(), api, eng);
     if (o == NULL) {
         fprintf(stderr, "failed to create orchestrator\n");
@@ -145,26 +148,6 @@ int main(int argc, char **argv) {
     }
 
     rc = orchestrator_run(o);
-
-    if (args.latency || args.u_latency) {
-        orchestrator_stats stats = orchestrator_collect(o);
-        if (stats.latency) {
-            long double percentiles[] = {
-                50.0L, 75.0L, 90.0L, 99.0L, 99.9L, 99.99L, 99.999L, 100.0L
-            };
-            printf("  Latency Distribution (HdrHistogram - Recorded Latency)\n");
-            for (size_t i = 0;
-                 i < sizeof(percentiles) / sizeof(percentiles[0]); i++) {
-                long double p = percentiles[i];
-                int64_t     n = hdr_value_at_percentile(stats.latency, (double)p);
-                printf("%7.3Lf%%", p);
-                char *ts = format_time_us((long double)n);
-                printf("%10s\n", ts);
-                free(ts);
-            }
-            printf("----------------------------------------------------------\n");
-        }
-    }
 
     orchestrator_destroy(o);
 
