@@ -2,7 +2,7 @@
 
 | Field         | Value                        |
 |---------------|------------------------------|
-| Status        | Proposed                     |
+| Status        | Accepted                     |
 | Date          | 2026-06-05                   |
 | Phase         | Phase 1                      |
 | Deciders      | wrkx core team               |

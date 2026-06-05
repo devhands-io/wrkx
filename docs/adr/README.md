@@ -23,4 +23,4 @@ and their consequences.
 |-----|-------|--------|-------|
 | [0001](0001-three-layer-engine-architecture.md) | Three-Layer Engine Architecture | Accepted  | Phase 1 |
 | [0002](0002-layer-configuration-protocol.md)   | Layer Configuration Protocol    | Accepted  | Phase 1 |
-| [0003](0003-phase0-rate-accuracy-and-keepalive-close.md) | Phase-0 Rate-Accuracy & Keep-Alive Close Handling | Proposed | Phase 1 |
+| [0003](0003-phase0-rate-accuracy-and-keepalive-close.md) | Phase-0 Rate-Accuracy & Keep-Alive Close Handling | Accepted | Phase 1 |
