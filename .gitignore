@@ -2,6 +2,8 @@
 *.a
 wrk
 wrkx
+baseline/wrkx0
+baseline/obj/
 obj/
 
 deps/luajit/src/host/buildvm

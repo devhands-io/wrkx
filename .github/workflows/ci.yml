@@ -29,6 +29,9 @@ jobs:
       - name: ADR compliance check
         run: make adr-check
 
+      - name: Baseline integrity (phase-0 frozen)
+        run: make baseline-verify
+
       - name: Unit & E2E tests
         run: make test
 
@@ -63,6 +66,9 @@ jobs:
 
       - name: ADR compliance check
         run: make adr-check
+
+      - name: Baseline integrity (phase-0 frozen)
+        run: make baseline-verify
 
       - name: Unit & E2E tests
         run: make test

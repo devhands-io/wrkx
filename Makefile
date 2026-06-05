@@ -73,7 +73,7 @@ contracts-check: $(CONTRACT_HDRS) src/main.c
 	@$(CC) $(CFLAGS) -Isrc -fsyntax-only src/main.c
 	@echo "OK: layer contracts compile cleanly"
 
-test: test-unit test-e2e
+test: baseline-verify test-unit test-e2e
 UNITY_SRC := deps/unity/unity.c
 UNITY_INC := -Ideps/unity
 TEST_UNIT_SRC := tests/unit/runner.c
@@ -277,8 +277,29 @@ coverage: | $(ODIR)
 adr-check:
 	@bash scripts/adr-compliance.sh
 
+# ---------------------------------------------------------------------------
+# Phase-0 baseline (frozen reference for old-vs-new comparison)
+#
+# baseline/src/ is a vendored, FROZEN snapshot of phase-0 (commit ea8ea9e),
+# guarded by baseline/MANIFEST.sha256. It must stay byte-for-byte unchanged
+# until the new orchestrator/engine architecture is fully validated.
+#   make baseline         build baseline/wrkx0 (shares ../deps/luajit)
+#   make baseline-verify   hash-check the frozen code is untouched
+#   make compare [MODE=..] run old vs new side by side (default MODE=instant)
+# See baseline/README.md.
+# ---------------------------------------------------------------------------
+baseline:
+	@$(MAKE) -C baseline
+
+baseline-verify:
+	@bash baseline/verify.sh
+
+compare: $(BIN) baseline
+	@bash scripts/compare.sh $(MODE)
+
 .PHONY: all clean test test-unit test-e2e test-asan coverage contracts-check \
-        test-cli test-orchestrator test-http1 test-lua-engine adr-check
+        test-cli test-orchestrator test-http1 test-lua-engine adr-check \
+        baseline baseline-verify compare
 # test_script is intentionally absent from test-asan (LuaJIT + ASAN conflict)
 .SUFFIXES:
 .SUFFIXES: .c .o .lua
