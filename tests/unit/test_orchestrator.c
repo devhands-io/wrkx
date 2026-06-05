@@ -208,6 +208,49 @@ void test_collect_null_safe(void) {
     TEST_ASSERT_EQUAL_UINT64(0, st.requests);
 }
 
+/*
+ * Regression test for the event-loop-size bug (t036):
+ *
+ * Each per-thread ae event loop must be sized for the TOTAL connection count,
+ * not the per-thread count.  File descriptors are process-wide; later threads
+ * get higher fd numbers.  If aeCreateEventLoop(10 + per_thread*3) is used,
+ * thread N's fds exceed setsize and aeCreateFileEvent returns AE_ERR, causing
+ * oc_connect to count them as connect errors and leave those connections dead
+ * for the whole run.  With 32 connections across 4 threads (8 per thread),
+ * the old formula gave setsize=34; thread 3's fds (3 event-loop fds + 24
+ * socketpair fds = ~51+) all exceed 33, producing 7+ connect errors and
+ * ~22% throughput shortfall.
+ *
+ * The fix: use o->cfg.connections (total) in aeCreateEventLoop, giving
+ * setsize=106 — matching the legacy wrk.c formula.
+ */
+void test_all_connections_established_multi_thread(void) {
+    /* 4 threads × 8 connections = 32 total; matches the user's -c32 -t4 case */
+    orchestrator_cfg cfg = {
+        .connections = 32,
+        .threads     = 4,
+        .duration_us = 300000,   /* 300 ms — long enough to observe all connects */
+        .rate        = 100000,   /* high rate so connections are exercised quickly */
+    };
+    orchestrator *o = orchestrator_create(cfg, &stub_proto, NULL, NULL);
+    TEST_ASSERT_NOT_NULL(o);
+
+    orchestrator_run(o);
+
+    /* Every connection must have connected exactly once at startup. */
+    TEST_ASSERT_EQUAL_INT_MESSAGE(
+        (int)cfg.connections, stub_connects,
+        "not all connections established — event loop setsize too small?");
+
+    /* No connect errors: oc_connect must not have failed for any fd. */
+    orchestrator_stats st = orchestrator_collect(o);
+    TEST_ASSERT_EQUAL_UINT64_MESSAGE(
+        0, st.errors_connect,
+        "connect errors detected — event loop setsize too small?");
+
+    orchestrator_destroy(o);
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_rate_init_defaults);
@@ -219,5 +262,6 @@ int main(void) {
     RUN_TEST(test_create_null_proto_fails);
     RUN_TEST(test_run_drives_protocol_and_collects);
     RUN_TEST(test_collect_null_safe);
+    RUN_TEST(test_all_connections_established_multi_thread);
     return UNITY_END();
 }

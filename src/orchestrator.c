@@ -671,7 +671,7 @@ int orchestrator_run(orchestrator *o) {
     for (uint64_t i = 0; i < o->n_threads; i++) {
         othread *t = &o->threads[i];
         t->stop_at = stop_at;
-        t->loop = aeCreateEventLoop(10 + (int)(t->connections * 3));
+        t->loop = aeCreateEventLoop(10 + (int)(o->cfg.connections * 3));
         if (!t->loop) return -2;
         if (pthread_create(&t->thread, NULL, thread_main, t) != 0)
             return -3;
