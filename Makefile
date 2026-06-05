@@ -41,7 +41,7 @@ clean:
 $(ODIR):
 	@mkdir -p $@
 
-$(ODIR)/bytecode.o: src/wrk.lua
+$(ODIR)/bytecode.o: src/wrk.lua $(LDIR)/libluajit.a | $(ODIR)
 	@echo LUAJIT $<
 	@$(SHELL) -c 'cd $(LDIR) && ./luajit -b $(CURDIR)/$< $(CURDIR)/$@'
 
