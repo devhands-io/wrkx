@@ -1,5 +1,5 @@
 title: Fix phantom-completion rate flood on Connection: close servers
-status: todo
+status: completed
 adr: 0001
 adr-step: P1-3
 depends: t027, t032
