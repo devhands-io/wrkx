@@ -11,10 +11,6 @@
 // Max recordable latency of 1 day
 #define MAX_LATENCY 24L * 60 * 60 * 1000000
 
-/* Progress bar state shared between main and worker threads */
-static volatile int g_calibrated_threads = 0;
-static volatile int g_progress_done      = 0;
-
 static struct config {
     uint64_t threads;
     struct aff_set_head *affinity;
@@ -84,106 +80,6 @@ static void usage() {
            "                                                      \n"
            "  Numeric arguments may include a SI unit (1k, 1M, 1G)\n"
            "  Time arguments may include a time unit (2s, 2m, 2h)\n");
-}
-
-typedef struct {
-    uint64_t  stop_at;
-    thread   *threads;
-    uint64_t  n_threads;
-} progress_arg;
-
-static void *progress_main(void *raw) {
-    progress_arg *arg      = raw;
-    uint64_t      stop_at  = arg->stop_at;
-    int           bar_width = 20;
-    uint64_t      n_threads = arg->n_threads;
-    uint64_t      cal_total = CALIBRATE_DELAY_MS / 1000;  /* calibration seconds */
-
-    /* ------------------------------------------------------------------ *
-     * Phase 1 — Calibration bar (\r-based, rewrites a single line).     *
-     * Thread calibration messages are buffered in thread->cal_msg and    *
-     * flushed after all threads finish (Phase 2), avoiding interleave.  *
-     * Exits early if all threads finish calibrating before the timer.   *
-     * ------------------------------------------------------------------ */
-    for (uint64_t s = 0; s <= cal_total; s++) {
-        if (g_progress_done) return NULL;
-        if (__sync_fetch_and_add(&g_calibrated_threads, 0) >= (int)n_threads)
-            break;
-
-        double   pct    = (double)s / (double)cal_total;
-        int      filled = (int)(pct * bar_width);
-
-        printf("\r  Calibrating: [");
-        for (int i = 0; i < bar_width; i++) {
-            if      (i < filled)               putchar('=');
-            else if (i == filled && pct < 1.0) putchar('>');
-            else                               putchar(' ');
-        }
-        printf("] %3d%% (%" PRIu64 "s / %" PRIu64 "s)  ",
-               (int)(pct * 100.0), s, cal_total);
-        fflush(stdout);
-
-        if (s == cal_total) break;
-        sleep(1);
-    }
-
-    /* ------------------------------------------------------------------ *
-     * Phase 2 — Wait for any straggler threads (typically instant now). *
-     * Then clear the bar line and flush all buffered cal_msg strings.   *
-     * ------------------------------------------------------------------ */
-    while (!g_progress_done &&
-           __sync_fetch_and_add(&g_calibrated_threads, 0) < (int)n_threads)
-        usleep(100000);
-
-    /* clear bar line */
-    printf("\r%60s\r", "");
-    fflush(stdout);
-
-    /* flush buffered calibration messages (one per thread) */
-    for (uint64_t i = 0; i < n_threads; i++) {
-        if (arg->threads[i].cal_msg[0])
-            printf("%s\n", arg->threads[i].cal_msg);
-    }
-    fflush(stdout);
-
-    if (g_progress_done) return NULL;
-
-    /* ------------------------------------------------------------------ *
-     * Phase 3 — Run bar (\r-based, existing behaviour, unchanged)       *
-     * ------------------------------------------------------------------ */
-    uint64_t bar_start = time_us();
-    uint64_t total_us  = stop_at > bar_start ? stop_at - bar_start : 1;
-
-    fflush(stdout);
-
-    while (!g_progress_done) {
-        uint64_t now     = time_us();
-        uint64_t elapsed = now > bar_start ? now - bar_start : 0;
-        if (elapsed > total_us) elapsed = total_us;
-
-        double   pct    = (double)elapsed / (double)total_us;
-        int      filled = (int)(pct * bar_width);
-        uint64_t el_s   = elapsed  / 1000000;
-        uint64_t tot_s  = total_us / 1000000;
-
-        printf("\r  Progress: [");
-        for (int i = 0; i < bar_width; i++) {
-            if      (i < filled)               putchar('=');
-            else if (i == filled && pct < 1.0) putchar('>');
-            else                               putchar(' ');
-        }
-        printf("] %3d%% (%" PRIu64 "s / %" PRIu64 "s)  ",
-               (int)(pct * 100.0), el_s, tot_s);
-        fflush(stdout);
-
-        if (pct >= 1.0) break;
-        sleep(1);
-    }
-
-    /* Erase the progress line so results print cleanly */
-    printf("\r%60s\r", "");
-    fflush(stdout);
-    return NULL;
 }
 
 int main(int argc, char **argv) {
@@ -295,17 +191,10 @@ int main(int argc, char **argv) {
     struct hdr_histogram* u_latency_histogram;
     hdr_init(1, MAX_LATENCY, 3, &u_latency_histogram);
 
-    progress_arg parg = { stop_at, threads, cfg.threads };
-    pthread_t progress_thread;
-    pthread_create(&progress_thread, NULL, progress_main, &parg);
-
     for (uint64_t i = 0; i < cfg.threads; i++) {
         thread *t = &threads[i];
         pthread_join(t->thread, NULL);
     }
-
-    g_progress_done = 1;
-    pthread_join(progress_thread, NULL);
 
     uint64_t runtime_us = time_us() - start;
 
@@ -501,11 +390,9 @@ static int calibrate(aeEventLoop *loop, long long id, void *data) {
     thread->interval = interval;
     thread->requests = 0;
 
-    snprintf(thread->cal_msg, sizeof(thread->cal_msg),
-             "  Thread calibration: mean lat.: %.3fms, rate sampling interval: %dms",
-             (thread->mean)/1000.0,
-             thread->interval);
-    __sync_fetch_and_add(&g_calibrated_threads, 1);
+    printf("  Thread calibration: mean lat.: %.3fms, rate sampling interval: %dms\n",
+            (thread->mean)/1000.0,
+            thread->interval);
 
     aeCreateTimeEvent(loop, thread->interval, sample_rate, thread, NULL);
 
@@ -670,20 +557,20 @@ static int response_complete(http_parser *parser) {
         printf("This wil never ever ever happen...");
         printf("But when it does. The following information will help in debugging");
         printf("response_complete:\n");
-        printf("  expected_latency_timing = %" PRId64 "\n", expected_latency_timing);
-        printf("  now = %" PRIu64 "\n", now);
-        printf("  expected_latency_start = %" PRIu64 "\n", expected_latency_start);
-        printf("  c->thread_start = %" PRIu64 "\n", c->thread_start);
-        printf("  c->complete = %" PRIu64 "\n", c->complete);
+        printf("  expected_latency_timing = %lld\n", expected_latency_timing);
+        printf("  now = %lld\n", now);
+        printf("  expected_latency_start = %lld\n", expected_latency_start);
+        printf("  c->thread_start = %lld\n", c->thread_start);
+        printf("  c->complete = %lld\n", c->complete);
         printf("  throughput = %g\n", c->throughput);
-        printf("  latest_should_send_time = %" PRIu64 "\n", c->latest_should_send_time);
-        printf("  latest_expected_start = %" PRIu64 "\n", c->latest_expected_start);
-        printf("  latest_connect = %" PRIu64 "\n", c->latest_connect);
-        printf("  latest_write = %" PRIu64 "\n", c->latest_write);
+        printf("  latest_should_send_time = %lld\n", c->latest_should_send_time);
+        printf("  latest_expected_start = %lld\n", c->latest_expected_start);
+        printf("  latest_connect = %lld\n", c->latest_connect);
+        printf("  latest_write = %lld\n", c->latest_write);
 
         expected_latency_start = c->thread_start +
                 ((c->complete ) / c->throughput);
-        printf("  next expected_latency_start = %" PRIu64 "\n", expected_latency_start);
+        printf("  next expected_latency_start = %lld\n", expected_latency_start);
     }
 
     c->latest_should_send_time = 0;
@@ -913,7 +800,7 @@ static int parse_args(struct config *cfg, char **url, struct http_parser_url *pa
                 break;
             case 'v':
                 printf("wrkx %s [%s] ", VERSION, aeGetApiName());
-                printf("Credits: Will Glozer (wrk), Gil Tene (wrk2)\n");
+                printf("Copyright (C) 2012 Will Glozer\n");
                 break;
             case 'h':
             case '?':
@@ -1006,3 +893,14 @@ static void print_hdr_latency(struct hdr_histogram* histogram, const char* descr
     }
 }
 
+static void print_stats_latency(stats *stats) {
+    long double percentiles[] = { 50.0, 75.0, 90.0, 99.0, 99.9, 99.99, 99.999, 100.0 };
+    printf("  Latency Distribution\n");
+    for (size_t i = 0; i < sizeof(percentiles) / sizeof(long double); i++) {
+        long double p = percentiles[i];
+        uint64_t n = stats_percentile(stats, p);
+        printf("%7.3Lf%%", p);
+        print_units(n, format_time_us, 10);
+        printf("\n");
+    }
+}

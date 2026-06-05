@@ -280,9 +280,10 @@ adr-check:
 # ---------------------------------------------------------------------------
 # Phase-0 baseline (frozen reference for old-vs-new comparison)
 #
-# baseline/src/ is a vendored, FROZEN snapshot of phase-0 (commit ea8ea9e),
-# guarded by baseline/MANIFEST.sha256. It must stay byte-for-byte unchanged
-# until the new orchestrator/engine architecture is fully validated.
+# baseline/src/ is a vendored, FROZEN snapshot of original wrk2 (commit 505cd14,
+# the last pre-progress-bar commit — reports exact rate), guarded by
+# baseline/MANIFEST.sha256. It must stay byte-for-byte unchanged until the new
+# orchestrator/engine architecture is fully validated.
 #   make baseline         build baseline/wrkx0 (shares ../deps/luajit)
 #   make baseline-verify   hash-check the frozen code is untouched
 #   make compare [MODE=..] run old vs new side by side (default MODE=instant)

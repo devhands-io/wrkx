@@ -17,7 +17,7 @@
 #include "http_parser.h"
 #include "hdr_histogram.h"
 
-#define VERSION  "0.1.0"
+#define VERSION  "4.0.0"
 #define RECVBUF  8192
 #define SAMPLES  100000000
 
@@ -45,7 +45,6 @@ typedef struct {
     lua_State *L;
     errors errors;
     struct connection *cs;
-    char cal_msg[128];  /* buffered calibration summary, printed after bar */
 } thread;
 
 typedef struct {

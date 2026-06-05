@@ -4,14 +4,10 @@
 
 #include <openssl/evp.h>
 #include <openssl/err.h>
-#include <openssl/opensslv.h>
 #include <openssl/ssl.h>
 
 #include "ssl.h"
 
-/* OpenSSL < 1.1.0 requires explicit thread-locking callbacks.
- * OpenSSL 1.1+ manages thread safety internally; these APIs were removed. */
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
 static pthread_mutex_t *locks;
 
 static void ssl_lock(int mode, int n, const char *file, int line) {
@@ -26,12 +22,10 @@ static void ssl_lock(int mode, int n, const char *file, int line) {
 static unsigned long ssl_id() {
     return (unsigned long) pthread_self();
 }
-#endif /* OPENSSL_VERSION_NUMBER < 0x10100000L */
 
 SSL_CTX *ssl_init() {
     SSL_CTX *ctx = NULL;
 
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
     SSL_load_error_strings();
     SSL_library_init();
     OpenSSL_add_all_algorithms();
@@ -51,14 +45,6 @@ SSL_CTX *ssl_init() {
             SSL_CTX_set_session_cache_mode(ctx, SSL_SESS_CACHE_CLIENT);
         }
     }
-#else
-    if ((ctx = SSL_CTX_new(TLS_client_method()))) {
-        SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
-        SSL_CTX_set_verify_depth(ctx, 0);
-        SSL_CTX_set_mode(ctx, SSL_MODE_AUTO_RETRY);
-        SSL_CTX_set_session_cache_mode(ctx, SSL_SESS_CACHE_CLIENT);
-    }
-#endif /* OPENSSL_VERSION_NUMBER < 0x10100000L */
 
     return ctx;
 }
