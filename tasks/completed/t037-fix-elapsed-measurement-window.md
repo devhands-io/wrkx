@@ -1,5 +1,5 @@
 title: Fix reported Requests/sec — measure elapsed from after thread creation
-status: todo
+status: completed
 adr: 0003
 adr-step: A
 depends: t032

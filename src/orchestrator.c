@@ -677,13 +677,21 @@ int orchestrator_run(orchestrator *o) {
             return -3;
     }
 
+    /* ADR 0003 Decision A: the reported elapsed window must EXCLUDE the
+     * thread/event-loop creation above. `o->start_us` stays the stop_at anchor
+     * (the test still stops at a fixed wall-clock duration); `run_start` is the
+     * runtime clock captured *after* the create loop — matching phase-0
+     * wrk.c's `start = time_us()`. Reporting elapsed from o->start_us instead
+     * would charge setup time to the test window and under-report Requests/sec. */
+    uint64_t run_start = time_us();
+
     for (uint64_t i = 0; i < o->n_threads; i++)
         pthread_join(o->threads[i].thread, NULL);
 
     parg.done = 1;
     pthread_join(progress_thread, NULL);
 
-    uint64_t elapsed = time_us() - o->start_us;
+    uint64_t elapsed = time_us() - run_start;
 
     /* Aggregate per-thread stats into the handle. */
     uint64_t complete = 0, bytes = 0;
@@ -708,7 +716,7 @@ int orchestrator_run(orchestrator *o) {
     o->result.errors_connect = agg.connect;
     o->result.errors_status  = agg.status;
     o->result.errors_timeout = agg.timeout;
-    o->result.start_us       = o->start_us;
+    o->result.start_us       = run_start;
     o->result.elapsed_us     = elapsed;
 
     /* ---- Report stage --------------------------------------------------- */
