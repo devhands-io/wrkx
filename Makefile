@@ -297,9 +297,15 @@ baseline-verify:
 compare: $(BIN) baseline
 	@bash scripts/compare.sh $(MODE)
 
+# Old-vs-new behavioural parity gate (ADR 0003). Builds both binaries, then
+# checks rps tolerance + socket-error parity on clean and keepalive-close
+# servers. Run in CI; kept out of the default `make test` for runtime.
+parity: $(BIN) baseline
+	@bash tests/e2e/parity.sh
+
 .PHONY: all clean test test-unit test-e2e test-asan coverage contracts-check \
         test-cli test-orchestrator test-http1 test-lua-engine adr-check \
-        baseline baseline-verify compare
+        baseline baseline-verify compare parity
 # test_script is intentionally absent from test-asan (LuaJIT + ASAN conflict)
 .SUFFIXES:
 .SUFFIXES: .c .o .lua

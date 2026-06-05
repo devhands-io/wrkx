@@ -1,5 +1,5 @@
 title: Parity verification — old-vs-new rps + socket-error gate
-status: todo
+status: completed
 adr: 0003
 adr-step: verify
 depends: t037, t038

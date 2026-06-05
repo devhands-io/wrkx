@@ -35,6 +35,9 @@ jobs:
       - name: Unit & E2E tests
         run: make test
 
+      - name: Parity vs phase-0 baseline (ADR 0003)
+        run: make parity
+
       - name: Coverage (gcov)
         run: make coverage
 
@@ -72,6 +75,9 @@ jobs:
 
       - name: Unit & E2E tests
         run: make test
+
+      - name: Parity vs phase-0 baseline (ADR 0003)
+        run: make parity
 
       - name: ASAN / UBSan
         run: make test-asan

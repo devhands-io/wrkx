@@ -45,7 +45,8 @@ SERVER_PID=""
 cleanup() { [[ -n "$SERVER_PID" ]] && kill "$SERVER_PID" 2>/dev/null || true; }
 trap cleanup EXIT
 
-python3 "$SERVER" "$PORT" "$MODE" &
+# Optional server arg (e.g. the kalimit close-every-N value) via $SERVER_ARG.
+python3 "$SERVER" "$PORT" "$MODE" ${SERVER_ARG:-} &
 SERVER_PID=$!
 for i in $(seq 1 20); do
     python3 -c "import socket;s=socket.socket();s.connect(('127.0.0.1',$PORT));s.close()" 2>/dev/null && break
@@ -57,22 +58,32 @@ URL="http://localhost:$PORT/"
 run() {  # $1=binary -> prints "rps|p50"
     local out
     out=$("$1" "${ARGS[@]}" "$URL" 2>/dev/null | tr -d '\r')
-    local rps p50
+    local rps p50 errs
     rps=$(printf '%s\n' "$out" | awk '/Requests\/sec:/{print $2; exit}')
     p50=$(printf '%s\n' "$out" | awk '/ 50\.000%/{print $2; exit}')
-    echo "${rps:-0}|${p50:-n/a}"
+    # Sum the four "Socket errors:" counters (line absent => 0 errors).
+    errs=$(printf '%s\n' "$out" | awk '
+        /Socket errors:/ {
+            for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+,?$/) { gsub(/,/,"",$i); s += $i }
+            print s; found = 1; exit
+        }
+        END { if (!found) print 0 }')
+    echo "${rps:-0}|${p50:-n/a}|${errs:-0}"
 }
 
-echo "== compare: mode=$MODE args=[${ARGS[*]}] (tol ${TOL}%) =="
+echo "== compare: mode=$MODE args=[${ARGS[*]}] (rps tol ${TOL}%, errors must not exceed OLD) =="
 r_old=$(run "$OLD"); r_new=$(run "$NEW")
-rps_old=${r_old%|*}; p50_old=${r_old#*|}
-rps_new=${r_new%|*}; p50_new=${r_new#*|}
+IFS='|' read -r rps_old p50_old err_old <<<"$r_old"
+IFS='|' read -r rps_new p50_new err_new <<<"$r_new"
 
 printf '%-18s %14s %14s\n' "metric" "OLD(wrkx0)" "NEW(wrkx)"
 printf '%-18s %14s %14s\n' "Requests/sec" "$rps_old" "$rps_new"
 printf '%-18s %14s %14s\n' "Latency p50"  "$p50_old" "$p50_new"
+printf '%-18s %14s %14s\n' "Socket errors" "$err_old" "$err_new"
 
-# Tolerance check on Requests/sec (integer math on truncated values).
+fail=0
+
+# (1) Requests/sec within tolerance (integer math on truncated values).
 o=${rps_old%.*}; n=${rps_new%.*}
 if [[ -z "$o" || "$o" -eq 0 ]]; then
     echo "RESULT: inconclusive (OLD rps=$rps_old)"; exit 1
@@ -80,9 +91,18 @@ fi
 diff=$(( n > o ? n - o : o - n ))
 pct=$(( diff * 100 / o ))
 if [[ "$pct" -le "$TOL" ]]; then
-    echo "RESULT: PASS — NEW within ${pct}% of OLD"
-    exit 0
+    echo "  rps: PASS — NEW within ${pct}% of OLD"
 else
-    echo "RESULT: FAIL — NEW diverges ${pct}% from OLD (> ${TOL}%)"
-    exit 1
+    echo "  rps: FAIL — NEW diverges ${pct}% from OLD (> ${TOL}%)"
+    fail=1
 fi
+
+# (2) Socket-error parity: NEW must not introduce errors OLD did not have.
+if [[ "${err_new:-0}" -le "${err_old:-0}" ]]; then
+    echo "  errors: PASS — NEW (${err_new}) <= OLD (${err_old})"
+else
+    echo "  errors: FAIL — NEW (${err_new}) > OLD (${err_old})"
+    fail=1
+fi
+
+if [[ "$fail" -eq 0 ]]; then echo "RESULT: PASS"; exit 0; else echo "RESULT: FAIL"; exit 1; fi
