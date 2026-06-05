@@ -162,6 +162,28 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# R6 — Transfer/sec and the "... read" summary must be non-zero (t042).
+#      The protocol surfaces response bytes via connection.bytes; if that
+#      channel is missing, both report 0.00B even though responses arrived.
+# ---------------------------------------------------------------------------
+xfer=$(grep "Transfer/sec:" "$TMP_BL" | head -1 || true)
+read_amt=$(grep -oE "[0-9.]+[KMGT]?B read" "$TMP_BL" | head -1 || true)
+
+if [[ -z "$xfer" ]]; then
+    fail "R6: no Transfer/sec line in output"
+elif echo "$xfer" | grep -qE '[1-9]'; then
+    pass "Transfer/sec is non-zero (R6) [$xfer]"
+else
+    fail "R6: Transfer/sec is zero ($xfer) — byte channel broken"
+fi
+
+if echo "$read_amt" | grep -qE '^[1-9]|\.[1-9]'; then
+    pass "summary '... read' is non-zero (R6) [$read_amt]"
+else
+    fail "R6: summary read amount is zero ('$read_amt') — byte channel broken"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""

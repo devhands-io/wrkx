@@ -148,6 +148,21 @@ void test_complete_response_is_done(void) {
 }
 
 /*
+ * Regression test for the Transfer/sec 0.00B bug (t042). On every PROTO_DONE*
+ * the protocol must surface the response's wire size via connection.bytes, so
+ * the orchestrator can accumulate it and report Transfer/sec. Before the fix
+ * this channel did not exist and Transfer/sec was always 0.00B.
+ */
+void test_done_surfaces_response_bytes(void) {
+    conn.bytes = 0;
+    server_send(COMPLETE_RESP, sizeof(COMPLETE_RESP) - 1);
+    TEST_ASSERT_EQUAL_INT(PROTO_DONE, drive_readable());
+    /* The full response (status line + headers + body) was received in one
+     * read, so the surfaced size must equal the bytes we sent. */
+    TEST_ASSERT_EQUAL_UINT(sizeof(COMPLETE_RESP) - 1, (unsigned)conn.bytes);
+}
+
+/*
  * Regression test for ADR 0003-B: a complete 2xx response carrying
  * "Connection: close" must report PROTO_DONE_CLOSE (so the orchestrator
  * reconnects cleanly) — not PROTO_DONE (which would re-use a closing socket
@@ -269,6 +284,7 @@ int main(void) {
 
     UNITY_BEGIN();
     RUN_TEST(test_complete_response_is_done);
+    RUN_TEST(test_done_surfaces_response_bytes);
     RUN_TEST(test_connection_close_reports_done_close);
     RUN_TEST(test_partial_headers_are_pending);
     RUN_TEST(test_partial_body_is_pending);

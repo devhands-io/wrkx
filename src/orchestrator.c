@@ -281,6 +281,9 @@ static bool record_response(othread *t, oconn *c) {
 
     t->complete++;
     t->requests++;
+    /* Accumulate the response wire size the protocol surfaced via the
+     * connection byte-channel (t042), for Transfer/sec reporting. */
+    t->bytes += c->conn.bytes;
 
     int64_t uncorrected = 0;
     int64_t expected = rate_expected_latency(&c->rate, now, &uncorrected);

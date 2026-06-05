@@ -50,9 +50,16 @@ typedef struct protocol {
  * script_state is owned by the Request Layer. Transport, thread back-pointer
  * and timing fields are internal and added by the implementation. */
 struct connection {
-    int   fd;
-    void *proto_state;   /* opaque; allocated by connect, freed by close   */
-    void *script_state;  /* opaque; owned by the Request Layer             */
+    int    fd;
+    void  *proto_state;   /* opaque; allocated by connect, freed by close   */
+    void  *script_state;  /* opaque; owned by the Request Layer             */
+    size_t bytes;         /* response-byte channel (t042): the protocol sets
+                           * this to the wire size of the response it just
+                           * completed, on every readable() call that returns a
+                           * PROTO_DONE* status. The orchestrator reads and
+                           * accumulates it when recording that response, then
+                           * reports it as Transfer/sec. Undefined for
+                           * PROTO_PENDING / PROTO_ERROR returns. */
 };
 
 #endif /* PROTO_H */

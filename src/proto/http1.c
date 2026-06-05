@@ -22,9 +22,12 @@
  *     a module-static `g_cfg`. One CLI invocation == one target, so this mirrors
  *     wrk.c's single global `sock`/`cfg.host`/`cfg.ctx`. Per-connection live
  *     resources (socket, TLS object, parser, buffers) live in proto_state.
- *   - PROTO_DONE/PENDING/ERROR is the only response signal; the orchestrator
- *     already records latency itself and asks the Request Layer for status, so
- *     no extra return channel is needed in Phase 1.
+ *   - Response byte counts ARE surfaced (t042): connection.bytes was added to
+ *     the contract as a one-word channel that the protocol fills with the wire
+ *     size of each completed response. (The original Phase-1 note here claimed
+ *     no channel was needed; that turned out to be wrong — Transfer/sec read
+ *     0.00B without it.) HTTP status is still not surfaced; the orchestrator
+ *     asks the Request Layer for status, so no extra channel is needed for it.
  *
  * Invariant 2: no scripting header is included anywhere in this file.
  * --------------------------------------------------------------------------
@@ -212,6 +215,11 @@ static proto_status http1_readable(connection *c) {
             s->complete = false;
             http_parser_init(&s->parser, HTTP_RESPONSE);
             s->parser.data = s;
+            /* Surface this response's wire size to the orchestrator before
+             * resetting our per-response accumulator (t042). Set for every
+             * PROTO_DONE* result so status-error and close completions are also
+             * counted toward Transfer/sec, matching phase-0 wrk.c. */
+            c->bytes = s->bytes;
             s->bytes = 0;
             return result;
         }
