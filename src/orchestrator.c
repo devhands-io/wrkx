@@ -423,6 +423,20 @@ static int check_timeouts(aeEventLoop *loop, long long id, void *data) {
     return TIMEOUT_INTERVAL_MS;
 }
 
+/*
+ * One-shot timer (t043): wake the event loop AT stop_at and stop it. Without
+ * this the loop sleeps until the next per-connection send timer (~one inter-send
+ * interval; ~9ms at low per-connection rates), then notices stop_at on the
+ * resulting completion — charging that dead interval to runtime_us (~0.05% over
+ * a 20s run) and under-reporting Requests/sec. check_timeouts also stops past
+ * stop_at, but only every TIMEOUT_INTERVAL_MS (2s), so the send path always wins.
+ */
+static int stop_event(aeEventLoop *loop, long long id, void *data) {
+    (void)id; (void)data;
+    aeStop(loop);
+    return AE_NOMORE;
+}
+
 /* ------------------------------------------------------------------------- */
 /* Thread main                                                               */
 /* ------------------------------------------------------------------------- */
@@ -462,6 +476,12 @@ static void *thread_main(void *arg) {
     uint64_t timeout_delay   = TIMEOUT_INTERVAL_MS + (t->connections * 5);
     aeCreateTimeEvent(t->loop, calibrate_delay, calibrate, t, NULL);
     aeCreateTimeEvent(t->loop, timeout_delay, check_timeouts, t, NULL);
+
+    /* t043: fire exactly at stop_at so the loop stops promptly instead of
+     * sleeping until the next ~9ms send timer (which inflates runtime_us). */
+    int64_t  stop_in_us = (int64_t)t->stop_at - (int64_t)time_us();
+    long long stop_in_ms = stop_in_us > 0 ? stop_in_us / 1000 : 0;
+    aeCreateTimeEvent(t->loop, stop_in_ms, stop_event, t, NULL);
 
     aeMain(t->loop);
 
