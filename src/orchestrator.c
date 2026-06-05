@@ -713,10 +713,16 @@ int orchestrator_run(orchestrator *o) {
     for (uint64_t i = 0; i < o->n_threads; i++)
         pthread_join(o->threads[i].thread, NULL);
 
+    /* ADR 0003 / t041: close the measured window the instant the workers stop,
+     * BEFORE tearing down the progress thread. The progress thread re-checks
+     * completion only once per sleep(1) and then erases its line (terminal
+     * I/O); joining it first would charge that wakeup lag + erase to runtime_us
+     * (~0.3% over 20s), under-reporting Requests/sec. Pre-progress-bar phase-0
+     * (and the t040 baseline) read runtime immediately after the worker join. */
+    uint64_t elapsed = time_us() - run_start;
+
     parg.done = 1;
     pthread_join(progress_thread, NULL);
-
-    uint64_t elapsed = time_us() - run_start;
 
     /* Aggregate per-thread stats into the handle. */
     uint64_t complete = 0, bytes = 0;
