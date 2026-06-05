@@ -9,6 +9,7 @@ Modes:
   delay     - 200 OK after a fixed 50 ms delay
   flaky     - 10% of responses return 503, rest 200 OK
   drop      - close the connection abruptly (tests reconnect patch)
+  close     - 200 OK with Connection: close, then close (reconnect per request)
 """
 
 import sys
@@ -30,6 +31,14 @@ RESPONSE_503 = (
     b"Content-Length: 0\r\n"
     b"Connection: keep-alive\r\n"
     b"\r\n"
+)
+
+RESPONSE_200_CLOSE = (
+    b"HTTP/1.1 200 OK\r\n"
+    b"Content-Length: 2\r\n"
+    b"Connection: close\r\n"
+    b"\r\n"
+    b"OK"
 )
 
 
@@ -54,6 +63,11 @@ def handle(conn, mode):
                     conn.sendall(RESPONSE_200)
 
             elif mode == "drop":
+                conn.close()
+                return
+
+            elif mode == "close":
+                conn.sendall(RESPONSE_200_CLOSE)
                 conn.close()
                 return
 

@@ -209,6 +209,42 @@ void test_two_responses_on_one_connection(void) {
     TEST_ASSERT_EQUAL_INT(PROTO_DONE, drive_readable());
 }
 
+/*
+ * Regression test for the phantom-completion flood (t036).
+ *
+ * On a Connection: close server the response is immediately followed by a
+ * FIN. The orchestrator keeps the readable event armed, so readable() fires
+ * again on the EOF. Before the fix, http1_readable left s->complete set after
+ * reporting PROTO_DONE, so this second call re-reported PROTO_DONE for the SAME
+ * response — a phantom completion. The level-triggered EOF then re-entered in a
+ * tight loop, double-counting requests and corrupting rate pacing (request
+ * count explodes, throughput runs ~10x over -R, latency balloons to seconds).
+ *
+ * Correct behaviour: the completion is reported exactly once; the subsequent
+ * readable on the closed peer returns PROTO_ERROR so the orchestrator
+ * reconnects (matching wrk.c, which reconnects on !keep_alive).
+ */
+void test_completion_then_close_reports_done_once(void) {
+    /* Full response, then the server closes the connection. */
+    server_send(COMPLETE_RESP, sizeof(COMPLETE_RESP) - 1);
+    close(server_fd);
+    server_fd = -1;
+    usleep(2000);   /* let the response bytes + FIN arrive together */
+
+    /* First readable: the one real completion. */
+    TEST_ASSERT_EQUAL_INT(PROTO_DONE, drive_readable());
+
+    /* Second readable: must NOT re-report the same response. The peer has
+     * closed, so this is an error (reconnect), never a phantom PROTO_DONE. */
+    proto_status second = drive_readable();
+    TEST_ASSERT_NOT_EQUAL_INT_MESSAGE(
+        PROTO_DONE, second,
+        "phantom completion: same response reported twice");
+    TEST_ASSERT_NOT_EQUAL_INT_MESSAGE(
+        PROTO_DONE_STATUS_ERR, second,
+        "phantom completion: same response reported twice");
+}
+
 int main(void) {
     start_listener();
 
@@ -220,6 +256,7 @@ int main(void) {
     RUN_TEST(test_malformed_response_is_error);
     RUN_TEST(test_peer_close_without_response_is_error);
     RUN_TEST(test_two_responses_on_one_connection);
+    RUN_TEST(test_completion_then_close_reports_done_once);
     int rc = UNITY_END();
 
     if (g_addr) freeaddrinfo(g_addr);
