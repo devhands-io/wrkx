@@ -12,10 +12,15 @@
  * header directly. Protocol behaviour is reached only through glue modules.
  * Invariant 4: glue modules (scripting/<engine>/<proto>_helpers.c) are the
  * only place a protocol header and an engine header may coexist.
+ *
+ * script_helper_fn and script_helper are canonical in include/wrkx_extension.h
+ * and re-exported here so internal code continues to work unchanged.
  */
 
 #include <stddef.h>
 #include <stdint.h>
+
+#include "wrkx_extension.h"   /* script_helper_fn, script_helper */
 
 /* Defined in orchestrator.h; referenced here by pointer only so this contract
  * does not pull in the Orchestrator header. */
@@ -39,7 +44,7 @@ typedef struct script_api {
     /* Called once per thread before any requests. */
     void (*init)(script_engine *, uint64_t thread_id, uint64_t connections);
 
-    /* Called before each request. Returns a heap-allocated buffer; the engine
+    /* Called before each request. Returns a heap-allocated buffer; caller
      * frees it. */
     char *(*request)(script_engine *, size_t *len_out);
 
@@ -52,19 +57,6 @@ typedef struct script_api {
 
     void (*destroy)(script_engine *);
 } script_api;
-
-/*
- * Engine-agnostic helper descriptor. engine_ctx is supplied by the scripting
- * engine at each call site; its concrete type (lua_State *, JSContext *, ...)
- * is known only to the glue module that implements fn — never to the protocol
- * layer. Argument marshalling and return-value handling are the engine's job.
- */
-typedef int (*script_helper_fn)(void *engine_ctx);
-
-typedef struct script_helper {
-    const char      *name;
-    script_helper_fn fn;   /* implemented in scripting/<engine>/<proto>_helpers.c */
-} script_helper;
 
 /*
  * Registers a namespace of helpers into the scripting engine. Called by each

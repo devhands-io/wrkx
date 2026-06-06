@@ -1,4 +1,4 @@
-CFLAGS  := -std=c99 -Wall -Werror -O2 -D_REENTRANT
+CFLAGS  := -std=c99 -Wall -Werror -O2 -D_REENTRANT -Iinclude
 LIBS    := -lpthread -lm -lcrypto -lssl
 
 TARGET  := $(shell uname -s | tr '[A-Z]' '[a-z]' 2>/dev/null || echo unknown)
@@ -145,7 +145,11 @@ LUA_REDIS_ENGINE_DEPS := $(LUA_ENGINE_DEPS) \
                          src/scripting/lua/redis_helpers.c \
                          src/proto/redis.c src/proto/resp.c
 
-test-unit: $(TEST_UNIT_BIN) $(TEST_STATS_BIN) $(TEST_UNITS_BIN) $(TEST_HDR_BIN) $(TEST_SCRIPT_BIN) $(TEST_HTTP1_BIN) $(TEST_REDIS_BIN) $(TEST_CLI_BIN) $(TEST_LUA_ENGINE_BIN) $(TEST_REDIS_LUA_BIN)
+TEST_EXT_API_SRC := tests/unit/test_extension_api.c
+TEST_EXT_API_BIN := obj/test_extension_api
+EXT_TOY_SRC      := extensions/toy/toy.c
+
+test-unit: $(TEST_UNIT_BIN) $(TEST_STATS_BIN) $(TEST_UNITS_BIN) $(TEST_HDR_BIN) $(TEST_SCRIPT_BIN) $(TEST_HTTP1_BIN) $(TEST_REDIS_BIN) $(TEST_CLI_BIN) $(TEST_LUA_ENGINE_BIN) $(TEST_REDIS_LUA_BIN) $(TEST_EXT_API_BIN)
 	@./$(TEST_UNIT_BIN)
 	@./$(TEST_STATS_BIN)
 	@./$(TEST_UNITS_BIN)
@@ -156,6 +160,7 @@ test-unit: $(TEST_UNIT_BIN) $(TEST_STATS_BIN) $(TEST_UNITS_BIN) $(TEST_HDR_BIN) 
 	@./$(TEST_CLI_BIN)
 	@./$(TEST_LUA_ENGINE_BIN)
 	@./$(TEST_REDIS_LUA_BIN)
+	@./$(TEST_EXT_API_BIN)
 
 test-redis: $(TEST_REDIS_BIN)
 	@./$(TEST_REDIS_BIN)
@@ -174,6 +179,36 @@ test-lua-engine: $(TEST_LUA_ENGINE_BIN)
 
 test-redis-lua: $(TEST_REDIS_LUA_BIN)
 	@./$(TEST_REDIS_LUA_BIN)
+
+test-extension-api: $(TEST_EXT_API_BIN)
+	@./$(TEST_EXT_API_BIN)
+
+# Extension API test: only needs wrkx_extension.h and the toy extension source.
+# No scripting engine, no LuaJIT, no orchestrator.
+$(TEST_EXT_API_BIN): $(TEST_EXT_API_SRC) $(UNITY_SRC) $(EXT_TOY_SRC) | $(ODIR)
+	@$(CC) $(CFLAGS) $(UNITY_INC) -Iinclude \
+		-o $@ $(TEST_EXT_API_SRC) $(UNITY_SRC) $(EXT_TOY_SRC)
+
+# ---------------------------------------------------------------------------
+# Extension header isolation check (Gate C prerequisite)
+#
+# Runs $(CC) -M on every extension source file and fails if any dependency
+# path falls under src/ — which would indicate a private-header violation.
+# ---------------------------------------------------------------------------
+check-extension-headers:
+	@echo "Checking extension header isolation..."
+	@ok=1; \
+	for f in $(EXT_TOY_SRC); do \
+	    deps=$$($(CC) $(CFLAGS) -Iinclude -M $$f 2>/dev/null \
+	            | tr ' \\' '\n' \
+	            | grep -E '^src/|/src/' \
+	            | grep -v '^$$' || true); \
+	    if [ -n "$$deps" ]; then \
+	        echo "FAIL: $$f depends on private src/ header(s):"; \
+	        echo "$$deps"; ok=0; \
+	    fi; \
+	done; \
+	if [ $$ok -eq 1 ]; then echo "check-extension-headers: PASS"; else exit 1; fi
 
 # NOTE: test_lua_engine links LuaJIT; intentionally excluded from test-asan
 # (LuaJIT custom mmap allocator conflicts with ASAN shadow memory — see t16).
@@ -355,6 +390,7 @@ gate-a-check:
 
 .PHONY: all clean test test-unit test-e2e test-asan coverage contracts-check \
         test-cli test-orchestrator test-http1 test-redis test-lua-engine test-redis-lua \
+        test-extension-api check-extension-headers \
         adr-check gate-a-check \
         baseline baseline-verify compare parity
 # test_script is intentionally absent from test-asan (LuaJIT + ASAN conflict)
