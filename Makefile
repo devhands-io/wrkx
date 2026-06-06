@@ -5,15 +5,18 @@ LIBS    := -lpthread -lm -lcrypto -lssl
 # Extension system
 #
 # Pass EXTENSIONS="name1 name2" to include extensions at build time.
-# Each extensions/<name>/Makefile.ext appends to EXT_SRCS and EXT_INIT_FNS.
+# Each extensions/<name>/Makefile.ext appends to EXT_SRCS, EXT_INIT_FNS,
+# and optionally EXT_CFLAGS (extra include paths for extension sources).
 # The generated obj/register_extensions.c dispatches to every active init fn.
-#   make EXTENSIONS=toy              — build with toy extension
+#   make                             — build with redis extension (default)
+#   make EXTENSIONS=toy              — build with toy extension only
 #   make EXTENSIONS="toy redis"      — build with two extensions
-#   make                             — no extensions (default)
+#   make EXTENSIONS=                 — no extensions (HTTP/1.1 only)
 # ---------------------------------------------------------------------------
-EXTENSIONS   ?=
+EXTENSIONS   ?= redis
 EXT_SRCS      :=
 EXT_INIT_FNS  :=
+EXT_CFLAGS    :=
 $(foreach ext,$(EXTENSIONS),$(eval -include extensions/$(ext)/Makefile.ext))
 GEN_REG_C    := obj/register_extensions.c
 
@@ -30,12 +33,11 @@ TARGET  := $(shell uname -s | tr '[A-Z]' '[a-z]' 2>/dev/null || echo unknown)
 # ---------------------------------------------------------------------------
 LAYER_SRC := src/main.c src/cli.c \
              src/orchestrator.c src/rate.c \
-             src/proto/http1.c src/proto/redis.c src/proto/resp.c \
+             src/proto/http1.c \
              src/transport.c \
              src/scripting/lua/engine.c \
              src/scripting/session.c \
-             src/scripting/lua/http1_helpers.c \
-             src/scripting/lua/redis_helpers.c
+             src/scripting/lua/http1_helpers.c
 
 COMMON_SRC := src/net.c src/ssl.c src/aprintf.c src/stats.c src/units.c \
               src/ae.c src/zmalloc.c src/http_parser.c \
@@ -70,7 +72,7 @@ $(ODIR)/bytecode.o: src/wrk.lua $(LDIR)/libluajit.a | $(ODIR)
 $(BIN): $(LAYER_SRC) $(COMMON_SRC) $(EXT_SRCS) $(ODIR)/bytecode.o $(LDIR)/libluajit.a | $(ODIR)
 	@echo CC+LINK $(BIN)
 	@sh scripts/gen_register_extensions.sh $(EXT_INIT_FNS) > $(GEN_REG_C)
-	@$(CC) $(CFLAGS) -Isrc -I$(LDIR) $(LDFLAGS) \
+	@$(CC) $(CFLAGS) $(EXT_CFLAGS) -Isrc -I$(LDIR) $(LDFLAGS) \
 		-o $@ $(LAYER_SRC) $(COMMON_SRC) $(EXT_SRCS) $(GEN_REG_C) $(ODIR)/bytecode.o $(LIBS)
 
 # Keep the pattern rule available for any remaining .o targets (bytecode.o).
@@ -136,8 +138,8 @@ HTTP1_DEPS     := src/proto/http1.c src/transport.c src/http_parser.c
 
 TEST_REDIS_SRC := tests/unit/test_redis.c
 TEST_REDIS_BIN := obj/test_redis
-# Protocol Engine deps for Redis: no libluajit, no orchestrator (ADR 0001 Invariant 2).
-REDIS_DEPS     := src/proto/redis.c src/proto/resp.c src/transport.c
+# Protocol Engine deps for Redis (now in extensions/redis/).
+REDIS_DEPS     := extensions/redis/redis.c extensions/redis/resp.c src/transport.c
 
 TEST_CLI_SRC := tests/unit/test_cli.c
 TEST_CLI_BIN := obj/test_cli
@@ -161,8 +163,8 @@ TEST_REDIS_LUA_BIN := obj/test_redis_lua
 # redis_helpers.c (Invariant 4) pulls redis.c + resp.c; engine.c pulls http1
 # glue + http1 protocol for the http.* namespace (always registered).
 LUA_REDIS_ENGINE_DEPS := $(LUA_ENGINE_DEPS) \
-                         src/scripting/lua/redis_helpers.c \
-                         src/proto/redis.c src/proto/resp.c
+                         extensions/redis/redis_lua_helpers.c \
+                         extensions/redis/redis.c extensions/redis/resp.c
 
 TEST_EXT_API_SRC := tests/unit/test_extension_api.c
 TEST_EXT_API_BIN := obj/test_extension_api
@@ -221,9 +223,10 @@ check-extension-headers:
 	fi; \
 	ok=1; \
 	for f in $(EXT_SRCS); do \
-	    deps=$$($(CC) $(CFLAGS) -M $$f 2>/dev/null \
+	    deps=$$($(CC) $(CFLAGS) $(EXT_CFLAGS) -M $$f 2>/dev/null \
 	            | tr ' \\' '\n' \
 	            | grep -E '^src/|/src/' \
+	            | grep -v 'deps/' \
 	            | grep -v '^$$' || true); \
 	    if [ -n "$$deps" ]; then \
 	        echo "FAIL: $$f depends on private src/ header(s):"; \
@@ -242,7 +245,7 @@ $(TEST_LUA_ENGINE_BIN): $(TEST_LUA_ENGINE_SRC) $(UNITY_SRC) $(LUA_ENGINE_DEPS) \
 
 $(TEST_REDIS_LUA_BIN): $(TEST_REDIS_LUA_SRC) $(UNITY_SRC) $(LUA_REDIS_ENGINE_DEPS) \
                        $(ODIR)/bytecode.o $(LDIR)/libluajit.a | $(ODIR)
-	@$(CC) $(CFLAGS) $(UNITY_INC) -Isrc -I$(LDIR) \
+	@$(CC) $(CFLAGS) $(UNITY_INC) -Iextensions/redis -Isrc -I$(LDIR) \
 		-o $@ $(TEST_REDIS_LUA_SRC) $(UNITY_SRC) $(LUA_REDIS_ENGINE_DEPS) \
 		$(ODIR)/bytecode.o $(LDFLAGS) $(LIBS)
 
@@ -256,7 +259,7 @@ $(TEST_HTTP1_BIN): $(TEST_HTTP1_SRC) $(UNITY_SRC) $(HTTP1_DEPS) | $(ODIR)
 		-o $@ $^ $(filter -L%,$(LIBS)) -lssl -lcrypto -lpthread
 
 $(TEST_REDIS_BIN): $(TEST_REDIS_SRC) $(UNITY_SRC) $(REDIS_DEPS) | $(ODIR)
-	@$(CC) $(CFLAGS) $(UNITY_INC) -Isrc $(LDFLAGS) \
+	@$(CC) $(CFLAGS) $(UNITY_INC) -Iextensions/redis -Isrc $(LDFLAGS) \
 		-o $@ $^ $(filter -L%,$(LIBS)) -lssl -lcrypto -lpthread
 
 $(TEST_ORCH_BIN): $(TEST_ORCH_SRC) $(UNITY_SRC) $(ORCH_DEPS) | $(ODIR)

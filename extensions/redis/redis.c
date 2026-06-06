@@ -1,19 +1,15 @@
 /*
- * Redis protocol implementation (ADR 0005, Phase 2, P2-1).
+ * Redis protocol implementation — redis extension.
+ * Moved from src/proto/redis.c (ADR 0005, Phase 3, P3-3).
  *
  * Implements the `protocol` vtable: connect (TCP/optional-TLS + AUTH/SELECT
  * handshake), write (forward RESP command bytes), readable (parse RESP
  * response), close.
- *
- * Gate A invariant: this file must not modify orchestrator.c, proto.h, ae.c,
- * or rate.c. All protocol behaviour is encapsulated here.
- *
- * Invariant 2: no scripting header is included anywhere in this file.
  */
 
-#include "proto/redis.h"
-#include "proto/resp.h"
-#include "transport.h"
+#include "redis.h"
+#include "resp.h"
+#include "wrkx_transport.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -22,7 +18,7 @@
 #include <poll.h>
 #include <sys/socket.h>
 
-#define REDIS_RECVBUF    16384
+#define REDIS_RECVBUF         16384
 #define REDIS_AUTH_TIMEOUT_MS 5000
 
 /* -------------------------------------------------------------------------
@@ -33,8 +29,8 @@ static struct {
     struct addrinfo *addr;
     SSL_CTX         *ssl_ctx;
     const char      *host;
-    const char      *password;  /* NULL = no AUTH */
-    int              db;        /* 0 = no SELECT  */
+    const char      *password;
+    int              db;
 } g_cfg;
 
 void redis_configure(struct addrinfo *addr, SSL_CTX *ssl_ctx,
@@ -51,24 +47,19 @@ void redis_configure(struct addrinfo *addr, SSL_CTX *ssl_ctx,
  * ---------------------------------------------------------------------- */
 
 typedef struct redis_state {
-    transport  xport;              /* TCP / optional TLS transport              */
-    char       rbuf[REDIS_RECVBUF];/* response read buffer                     */
-    size_t     rbuf_len;           /* bytes currently buffered                  */
-    bool       done;               /* last readable() returned PROTO_DONE*      */
-    bool       error;              /* last readable() returned PROTO_ERROR      */
-    bool       has_error_reply;    /* any '-' reply in the current pipeline     */
-    size_t     bytes;              /* accumulated wire bytes for current batch  */
-    uint32_t   pending_responses;  /* commands whose replies are still awaited  */
-    uint32_t   responses_received; /* replies parsed so far this batch          */
+    transport  xport;
+    char       rbuf[REDIS_RECVBUF];
+    size_t     rbuf_len;
+    bool       done;
+    bool       error;
+    bool       has_error_reply;
+    size_t     bytes;
+    uint32_t   pending_responses;
+    uint32_t   responses_received;
 } redis_state;
 
 /* -------------------------------------------------------------------------
  * Synchronous send/recv helpers for AUTH/SELECT in connect()
- *
- * The socket is non-blocking (set by transport_connect), but we drive it
- * with poll() so we can block for the AUTH RTT without changing socket flags.
- * This is intentionally blocking — AUTH happens once per connection and
- * typically completes in <1ms on localhost.
  * ---------------------------------------------------------------------- */
 
 static int sync_send_all(int fd, const char *buf, size_t len) {
@@ -83,11 +74,6 @@ static int sync_send_all(int fd, const char *buf, size_t len) {
     return 0;
 }
 
-/*
- * Read until resp_parse() finds a complete response or timeout.
- * Returns 0 on success (parsed), -1 on error/timeout.
- * On success, *reply is set to '+' or '-' (first byte of the response).
- */
 static int sync_recv_resp(int fd, char *rbuf, size_t rbuf_cap,
                           char *reply_type) {
     size_t len = 0;
@@ -99,8 +85,7 @@ static int sync_recv_resp(int fd, char *rbuf, size_t rbuf_cap,
             return 0;
         }
         if (rc < 0) return -1;
-        /* need more data */
-        if (len >= rbuf_cap) return -1;  /* buffer full, no complete response */
+        if (len >= rbuf_cap) return -1;
         struct pollfd pfd = { fd, POLLIN, 0 };
         if (poll(&pfd, 1, REDIS_AUTH_TIMEOUT_MS) <= 0) return -1;
         ssize_t n = recv(fd, rbuf + len, rbuf_cap - len, 0);
@@ -135,7 +120,6 @@ static int redis_connect(connection *c) {
         return -1;
     }
 
-    /* Wait for the non-blocking connect() to complete. */
     struct pollfd pfd = { fd, POLLOUT, 0 };
     if (poll(&pfd, 1, REDIS_AUTH_TIMEOUT_MS) <= 0) {
         transport_close(&s->xport);
@@ -150,7 +134,6 @@ static int redis_connect(connection *c) {
         return -1;
     }
 
-    /* AUTH handshake (synchronous, one RTT). */
     if (g_cfg.password != NULL) {
         const char *argv[2] = { "AUTH", g_cfg.password };
         size_t arglens[2]   = { 4, strlen(g_cfg.password) };
@@ -163,7 +146,6 @@ static int redis_connect(connection *c) {
         }
     }
 
-    /* SELECT <db> (synchronous, one RTT). */
     if (g_cfg.db > 0) {
         char dbstr[16];
         snprintf(dbstr, sizeof(dbstr), "%d", g_cfg.db);
@@ -187,12 +169,6 @@ static int redis_connect(connection *c) {
  * vtable: write
  * ---------------------------------------------------------------------- */
 
-/*
- * Count how many complete top-level RESP values (commands) are in buf.
- * Used to tell readable() how many replies to expect for a pipelined batch.
- * Reuses resp_parse(), which handles all five RESP types including arrays
- * (the encoding used for Redis commands: *N\r\n$len\r\ncmd\r\n...).
- */
 static uint32_t count_resp_commands(const char *buf, size_t len) {
     uint32_t count = 0;
     size_t   pos   = 0;
@@ -210,23 +186,18 @@ static int redis_write(connection *c, const char *buf, size_t len) {
     redis_state *s = c->proto_state;
     if (!s) return -1;
 
-    /* Drive TLS handshake on the first write (no-op for plain TCP). */
     switch (transport_handshake(&s->xport)) {
         case TRANSPORT_OK:    break;
         case TRANSPORT_RETRY: return 0;
         default:              return -1;
     }
 
-    /* A new request starts after the previous batch completed, or on the very
-     * first write (pending_responses == 0 from calloc). Reset parsing state
-     * and count how many commands are in the new buffer so readable() knows
-     * how many replies to accumulate before returning PROTO_DONE. */
     if (s->done || s->error || s->pending_responses == 0) {
-        s->rbuf_len          = 0;
-        s->done              = false;
-        s->error             = false;
-        s->has_error_reply   = false;
-        s->bytes             = 0;
+        s->rbuf_len           = 0;
+        s->done               = false;
+        s->error              = false;
+        s->has_error_reply    = false;
+        s->bytes              = 0;
         s->responses_received = 0;
         s->pending_responses  = (buf && len > 0)
                                 ? count_resp_commands(buf, len)
@@ -252,18 +223,14 @@ static proto_status redis_readable(connection *c) {
     redis_state *s = c->proto_state;
     if (!s) return PROTO_ERROR;
 
-    /* Drive TLS handshake if still in flight. */
     switch (transport_handshake(&s->xport)) {
         case TRANSPORT_OK:    break;
         case TRANSPORT_RETRY: return PROTO_PENDING;
         default:              return PROTO_ERROR;
     }
 
-    /* Safety: if the connection was not yet used for a write() call
-     * (e.g. in unit tests that drive readable() directly), expect 1 reply. */
     if (s->pending_responses == 0) s->pending_responses = 1;
 
-    /* Read available bytes into the tail of rbuf. */
     if (s->rbuf_len < sizeof(s->rbuf)) {
         size_t n = 0;
         transport_status rs = transport_read(&s->xport,
@@ -277,7 +244,6 @@ static proto_status redis_readable(connection *c) {
             case TRANSPORT_RETRY:
                 return PROTO_PENDING;
             case TRANSPORT_EOF:
-                /* Peer closed before a complete response — treat as error. */
                 s->error = true;
                 return PROTO_ERROR;
             default:
@@ -286,9 +252,6 @@ static proto_status redis_readable(connection *c) {
         }
     }
 
-    /* Parse as many complete RESP responses as are available in rbuf.
-     * For pipelining, the batch is complete when responses_received reaches
-     * pending_responses. For single-command use, pending_responses == 1. */
     while (s->responses_received < s->pending_responses) {
         size_t consumed = 0;
         int rc = resp_parse(s->rbuf, s->rbuf_len, &consumed);
@@ -309,7 +272,6 @@ static proto_status redis_readable(connection *c) {
         s->rbuf_len = remaining;
     }
 
-    /* All pending replies received — surface the accumulated wire size. */
     c->bytes = s->bytes;
     s->done  = true;
 
@@ -334,7 +296,7 @@ static void redis_close(connection *c) {
  * Vtable instance and getter
  * ---------------------------------------------------------------------- */
 
-static protocol redis = {
+static protocol redis_vtable = {
     .name     = "redis",
     .connect  = redis_connect,
     .write    = redis_write,
@@ -343,18 +305,17 @@ static protocol redis = {
 };
 
 protocol *redis_protocol(void) {
-    return &redis;
+    return &redis_vtable;
 }
 
 /* -------------------------------------------------------------------------
- * Request-construction helper (used by Request Layer glue, not wire path)
+ * Request-construction helper (used by the Lua glue module)
  * ---------------------------------------------------------------------- */
 
 char *redis_make_request(int argc, const char * const *argv,
                          const size_t *arglens, size_t *len_out) {
     if (argc <= 0 || !argv || !arglens) return NULL;
 
-    /* Conservative estimate: header line + per-arg overhead + data. */
     size_t cap = 32;
     for (int i = 0; i < argc; i++)
         cap += 24 + arglens[i];

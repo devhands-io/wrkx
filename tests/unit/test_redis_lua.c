@@ -25,8 +25,8 @@
 
 #include "scripting/script_api.h"
 #include "scripting/lua/engine.h"
-#include "scripting/lua/redis_helpers.h"
-#include "proto/resp.h"   /* resp_parse — to verify returned bytes are valid RESP */
+#include "redis_lua_helpers.h"   /* from extensions/redis/ */
+#include "resp.h"                /* from extensions/redis/ — to verify RESP encoding */
 
 /* -------------------------------------------------------------------------
  * Fixture
@@ -44,7 +44,8 @@ void setUp(void) {
     api->init(engine, 0, 1);
 
     /* Register Redis helpers after init (globals persist). */
-    lua_register_redis_helpers(engine);
+    script_register_helpers(engine, "redis",
+                            redis_lua_helpers, redis_lua_helpers_count);
 
     L = (lua_State *) lua_engine_state(engine);
     TEST_ASSERT_NOT_NULL(L);

@@ -47,6 +47,12 @@ jobs:
       - name: Extension build (toy) — header isolation + unit tests
         run: make clean && make EXTENSIONS=toy && make EXTENSIONS=toy check-extension-headers test-unit
 
+      - name: Extension build (redis) — Gate C header isolation + full suite
+        run: make clean && make EXTENSIONS=redis && make EXTENSIONS=redis check-extension-headers test
+
+      - name: Extension build (none) — HTTP-only binary + redis:// error
+        run: make clean && make EXTENSIONS= && ./wrkx -t1 -c1 -d1s -R1 redis://localhost:9 2>&1 | grep -q 'no extension provides'
+
   # ---------------------------------------------------------------------------
   # Linux — GCC, system OpenSSL, full suite
   # Note: `make coverage` is macOS-only for now — gcov file-naming differs
@@ -87,3 +93,9 @@ jobs:
 
       - name: Extension build (toy) — header isolation + unit tests
         run: make clean && make EXTENSIONS=toy && make EXTENSIONS=toy check-extension-headers test-unit
+
+      - name: Extension build (redis) — Gate C header isolation + full suite
+        run: make clean && make EXTENSIONS=redis && make EXTENSIONS=redis check-extension-headers test
+
+      - name: Extension build (none) — HTTP-only binary + redis:// error
+        run: make clean && make EXTENSIONS= && ./wrkx -t1 -c1 -d1s -R1 redis://localhost:9 2>&1 | grep -q 'no extension provides'

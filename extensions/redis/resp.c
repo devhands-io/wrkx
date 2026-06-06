@@ -1,11 +1,9 @@
 /*
- * RESP (REdis Serialization Protocol) codec (ADR 0005, Phase 2, P2-1).
- *
- * Encode: format a Redis command as a RESP bulk-string array.
- * Decode: detect when one complete RESP response has arrived in a buffer.
+ * RESP (REdis Serialization Protocol) codec — redis extension.
+ * Moved from src/proto/resp.c (ADR 0005, Phase 3, P3-3).
  */
 
-#include "proto/resp.h"
+#include "resp.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -52,10 +50,6 @@ int resp_encode(char *buf, size_t cap, int argc,
  * Decode helpers
  * ---------------------------------------------------------------------- */
 
-/*
- * Find the next \r\n in buf[0..len-1].
- * Returns pointer to the \r, or NULL if not found.
- */
 static const char *find_crlf(const char *buf, size_t len) {
     for (size_t i = 0; i + 1 < len; i++) {
         if (buf[i] == '\r' && buf[i + 1] == '\n')
@@ -64,15 +58,10 @@ static const char *find_crlf(const char *buf, size_t len) {
     return NULL;
 }
 
-/*
- * Parse a decimal integer (possibly negative) from buf, up to the \r\n.
- * Returns 1 on success (sets *val and *consumed to bytes including \r\n),
- * 0 if not enough data, -1 on error.
- */
 static int parse_integer_line(const char *buf, size_t len,
                               long long *val, size_t *consumed) {
     const char *crlf = find_crlf(buf, len);
-    if (!crlf) return 0;  /* need more data */
+    if (!crlf) return 0;
 
     char tmp[32];
     size_t n = (size_t)(crlf - buf);
@@ -82,45 +71,38 @@ static int parse_integer_line(const char *buf, size_t len,
 
     char *end;
     *val = strtoll(tmp, &end, 10);
-    if (end != tmp + n) return -1;  /* garbage in the number */
+    if (end != tmp + n) return -1;
 
-    *consumed = n + 2;  /* number bytes + \r\n */
+    *consumed = n + 2;
     return 1;
 }
 
-/*
- * Parse one RESP value starting at buf[0..len-1].
- * Returns total bytes consumed (>0), 0 (need more), or -1 (error).
- */
 static int resp_parse_one(const char *buf, size_t len);
 
 static int resp_parse_bulk(const char *buf, size_t len) {
-    /* buf[0] == '$', already consumed by caller */
     long long blen;
     size_t    hdr;
     int rc = parse_integer_line(buf + 1, len - 1, &blen, &hdr);
     if (rc <= 0) return rc;
-    hdr += 1;  /* account for '$' */
+    hdr += 1;
 
-    if (blen < 0) return (int)hdr;  /* nil bulk string: $-1\r\n */
+    if (blen < 0) return (int)hdr;
 
-    size_t total = hdr + (size_t)blen + 2;  /* header + data + \r\n */
+    size_t total = hdr + (size_t)blen + 2;
     if (len < total) return 0;
-    /* verify trailing \r\n */
     if (buf[hdr + (size_t)blen] != '\r' || buf[hdr + (size_t)blen + 1] != '\n')
         return -1;
     return (int)total;
 }
 
 static int resp_parse_array(const char *buf, size_t len) {
-    /* buf[0] == '*', already consumed by caller */
     long long count;
     size_t    hdr;
     int rc = parse_integer_line(buf + 1, len - 1, &count, &hdr);
     if (rc <= 0) return rc;
-    hdr += 1;  /* account for '*' */
+    hdr += 1;
 
-    if (count <= 0) return (int)hdr;  /* null array or empty */
+    if (count <= 0) return (int)hdr;
 
     size_t pos = hdr;
     for (long long i = 0; i < count; i++) {
@@ -139,7 +121,6 @@ static int resp_parse_one(const char *buf, size_t len) {
         case '+':
         case '-':
         case ':': {
-            /* Simple line reply: read to \r\n */
             const char *crlf = find_crlf(buf + 1, len - 1);
             if (!crlf) return 0;
             return (int)(crlf - buf) + 2;
@@ -149,7 +130,7 @@ static int resp_parse_one(const char *buf, size_t len) {
         case '*':
             return resp_parse_array(buf, len);
         default:
-            return -1;  /* unknown type byte */
+            return -1;
     }
 }
 

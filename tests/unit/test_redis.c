@@ -25,9 +25,9 @@
 #include <sys/socket.h>
 
 #include "unity.h"
-#include "proto/proto.h"
-#include "proto/resp.h"
-#include "proto/redis.h"
+#include "wrkx_extension.h"   /* proto_status, protocol, connection */
+#include "resp.h"             /* from extensions/redis/ */
+#include "redis.h"            /* from extensions/redis/ */
 
 /* =========================================================================
  * Loopback fixture

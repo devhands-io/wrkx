@@ -23,7 +23,7 @@
  * Version
  * ---------------------------------------------------------------------- */
 
-#define WRKX_EXTENSION_API_VERSION  UINT32_C(1)
+#define WRKX_EXTENSION_API_VERSION  UINT32_C(2)
 
 /* -------------------------------------------------------------------------
  * Protocol vtable
@@ -73,6 +73,27 @@ typedef struct script_helper {
 } script_helper;
 
 /* -------------------------------------------------------------------------
+ * Connection info (passed to schema configure callbacks)
+ *
+ * The host populates this after URL parsing and address resolution and
+ * passes it to the wrkx_configure_fn registered via register_schema().
+ * Extensions cast addrinfo / ssl_ctx back to their native types internally
+ * (include <netdb.h> and <openssl/ssl.h> in the extension source file).
+ * ---------------------------------------------------------------------- */
+
+typedef struct wrkx_connect_info {
+    void       *addrinfo;   /* struct addrinfo *; cast after including <netdb.h>  */
+    void       *ssl_ctx;    /* SSL_CTX *; cast after including <openssl/ssl.h>;
+                             * NULL for plain TCP                                  */
+    const char *host;       /* resolved hostname (for SNI etc.)                   */
+    const char *password;   /* URL userinfo field; NULL if absent                 */
+    const char *path;       /* URL path component (e.g. "/1" for database index)  */
+    const char *url;        /* full original URL                                  */
+} wrkx_connect_info;
+
+typedef void (*wrkx_configure_fn)(const wrkx_connect_info *info);
+
+/* -------------------------------------------------------------------------
  * Extension registration API
  * ---------------------------------------------------------------------- */
 
@@ -83,12 +104,23 @@ typedef struct wrkx_extension_api {
      * at startup; the host takes ownership of the pointer lifetime. */
     void (*register_protocol)(const protocol *proto);
 
-    /* Register a scripting helper namespace. The host defers engine-binding
-     * until a scripting engine is created; extensions need not know which
-     * engine is in use. Called once per namespace. */
+    /* Register a scripting helper namespace. The host binds helpers to each
+     * scripting engine as it is created. Called once per namespace. */
     void (*register_helpers)(const char          *ns,
                              const script_helper *helpers,
                              size_t               count);
+
+    /* Register URL schemas handled by this extension.
+     * schema     — plain variant  (e.g. "redis")
+     * schema_tls — TLS variant    (e.g. "rediss"); may be NULL
+     * default_port — default service port string (e.g. "6379")
+     * configure  — called once after URL resolution with the resolved
+     *              address, TLS context, and parsed URL fields; may be NULL
+     *              if the extension needs no per-run configuration. */
+    void (*register_schema)(const char        *schema,
+                            const char        *schema_tls,
+                            const char        *default_port,
+                            wrkx_configure_fn  configure);
 } wrkx_extension_api;
 
 /* Every extension entry point must match this signature.
