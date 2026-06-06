@@ -18,7 +18,8 @@ LAYER_SRC := src/main.c src/cli.c \
              src/transport.c \
              src/scripting/lua/engine.c \
              src/scripting/session.c \
-             src/scripting/lua/http1_helpers.c
+             src/scripting/lua/http1_helpers.c \
+             src/scripting/lua/redis_helpers.c
 
 COMMON_SRC := src/net.c src/ssl.c src/aprintf.c src/stats.c src/units.c \
               src/ae.c src/zmalloc.c src/http_parser.c \
@@ -135,7 +136,16 @@ LUA_ENGINE_DEPS := src/scripting/lua/engine.c src/scripting/session.c \
                    src/scripting/lua/http1_helpers.c \
                    src/proto/http1.c src/transport.c src/http_parser.c
 
-test-unit: $(TEST_UNIT_BIN) $(TEST_STATS_BIN) $(TEST_UNITS_BIN) $(TEST_HDR_BIN) $(TEST_SCRIPT_BIN) $(TEST_HTTP1_BIN) $(TEST_REDIS_BIN) $(TEST_CLI_BIN) $(TEST_LUA_ENGINE_BIN)
+TEST_REDIS_LUA_SRC := tests/unit/test_redis_lua.c
+TEST_REDIS_LUA_BIN := obj/test_redis_lua
+# Request Layer + Redis protocol deps. Links LuaJIT (excluded from test-asan).
+# redis_helpers.c (Invariant 4) pulls redis.c + resp.c; engine.c pulls http1
+# glue + http1 protocol for the http.* namespace (always registered).
+LUA_REDIS_ENGINE_DEPS := $(LUA_ENGINE_DEPS) \
+                         src/scripting/lua/redis_helpers.c \
+                         src/proto/redis.c src/proto/resp.c
+
+test-unit: $(TEST_UNIT_BIN) $(TEST_STATS_BIN) $(TEST_UNITS_BIN) $(TEST_HDR_BIN) $(TEST_SCRIPT_BIN) $(TEST_HTTP1_BIN) $(TEST_REDIS_BIN) $(TEST_CLI_BIN) $(TEST_LUA_ENGINE_BIN) $(TEST_REDIS_LUA_BIN)
 	@./$(TEST_UNIT_BIN)
 	@./$(TEST_STATS_BIN)
 	@./$(TEST_UNITS_BIN)
@@ -145,6 +155,7 @@ test-unit: $(TEST_UNIT_BIN) $(TEST_STATS_BIN) $(TEST_UNITS_BIN) $(TEST_HDR_BIN) 
 	@./$(TEST_REDIS_BIN)
 	@./$(TEST_CLI_BIN)
 	@./$(TEST_LUA_ENGINE_BIN)
+	@./$(TEST_REDIS_LUA_BIN)
 
 test-redis: $(TEST_REDIS_BIN)
 	@./$(TEST_REDIS_BIN)
@@ -161,12 +172,21 @@ test-http1: $(TEST_HTTP1_BIN)
 test-lua-engine: $(TEST_LUA_ENGINE_BIN)
 	@./$(TEST_LUA_ENGINE_BIN)
 
+test-redis-lua: $(TEST_REDIS_LUA_BIN)
+	@./$(TEST_REDIS_LUA_BIN)
+
 # NOTE: test_lua_engine links LuaJIT; intentionally excluded from test-asan
 # (LuaJIT custom mmap allocator conflicts with ASAN shadow memory — see t16).
 $(TEST_LUA_ENGINE_BIN): $(TEST_LUA_ENGINE_SRC) $(UNITY_SRC) $(LUA_ENGINE_DEPS) \
                         $(ODIR)/bytecode.o $(LDIR)/libluajit.a | $(ODIR)
 	@$(CC) $(CFLAGS) $(UNITY_INC) -Isrc -I$(LDIR) \
 		-o $@ $(TEST_LUA_ENGINE_SRC) $(UNITY_SRC) $(LUA_ENGINE_DEPS) \
+		$(ODIR)/bytecode.o $(LDFLAGS) $(LIBS)
+
+$(TEST_REDIS_LUA_BIN): $(TEST_REDIS_LUA_SRC) $(UNITY_SRC) $(LUA_REDIS_ENGINE_DEPS) \
+                       $(ODIR)/bytecode.o $(LDIR)/libluajit.a | $(ODIR)
+	@$(CC) $(CFLAGS) $(UNITY_INC) -Isrc -I$(LDIR) \
+		-o $@ $(TEST_REDIS_LUA_SRC) $(UNITY_SRC) $(LUA_REDIS_ENGINE_DEPS) \
 		$(ODIR)/bytecode.o $(LDFLAGS) $(LIBS)
 
 $(TEST_CLI_BIN): $(TEST_CLI_SRC) $(UNITY_SRC) $(CLI_TEST_DEPS) | $(ODIR)
@@ -332,7 +352,7 @@ gate-a-check:
 	@echo "Gate A: PASS (core engine files unchanged by t049)"
 
 .PHONY: all clean test test-unit test-e2e test-asan coverage contracts-check \
-        test-cli test-orchestrator test-http1 test-redis test-lua-engine \
+        test-cli test-orchestrator test-http1 test-redis test-lua-engine test-redis-lua \
         adr-check gate-a-check \
         baseline baseline-verify compare parity
 # test_script is intentionally absent from test-asan (LuaJIT + ASAN conflict)

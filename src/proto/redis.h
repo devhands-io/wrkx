@@ -33,4 +33,15 @@ void redis_configure(struct addrinfo *addr, SSL_CTX *ssl_ctx,
 /* Returns a pointer to the static protocol vtable. */
 protocol *redis_protocol(void);
 
+/*
+ * Format a Redis command as heap-allocated RESP bytes.
+ * Returns the buffer (caller must free) and sets *len_out to its length.
+ * Returns NULL on allocation failure or encode error.
+ *
+ * This is the public API used by the Lua glue module (redis_helpers.c) so
+ * that glue only includes proto/redis.h — never proto/resp.h directly.
+ */
+char *redis_make_request(int argc, const char * const *argv,
+                         const size_t *arglens, size_t *len_out);
+
 #endif /* REDIS_H */

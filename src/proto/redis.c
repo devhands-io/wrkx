@@ -16,6 +16,7 @@
 #include "transport.h"
 
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <errno.h>
 #include <poll.h>
@@ -305,4 +306,27 @@ static protocol redis = {
 
 protocol *redis_protocol(void) {
     return &redis;
+}
+
+/* -------------------------------------------------------------------------
+ * Request-construction helper (used by Request Layer glue, not wire path)
+ * ---------------------------------------------------------------------- */
+
+char *redis_make_request(int argc, const char * const *argv,
+                         const size_t *arglens, size_t *len_out) {
+    if (argc <= 0 || !argv || !arglens) return NULL;
+
+    /* Conservative estimate: header line + per-arg overhead + data. */
+    size_t cap = 32;
+    for (int i = 0; i < argc; i++)
+        cap += 24 + arglens[i];
+
+    char *buf = malloc(cap);
+    if (!buf) return NULL;
+
+    int n = resp_encode(buf, cap, argc, argv, arglens);
+    if (n <= 0) { free(buf); return NULL; }
+
+    if (len_out) *len_out = (size_t)n;
+    return buf;
 }
