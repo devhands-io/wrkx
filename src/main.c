@@ -19,6 +19,8 @@
 #include <errno.h>
 #include <netdb.h>
 #include <signal.h>
+#include <unistd.h>
+#include <sys/socket.h>
 
 #include <openssl/ssl.h>
 #include <openssl/err.h>
@@ -46,6 +48,26 @@ static char *url_part(const char *url, const struct http_parser_url *p,
     char *s = calloc(len + 1, 1);
     if (s) memcpy(s, url + off, len);
     return s;
+}
+
+/*
+ * Pick the first resolved address that actually accepts a connection, mirroring
+ * wrk2's wrk.connect() probe. getaddrinfo() with AF_UNSPEC may return an IPv6
+ * (::1) address first on a dual-stack host while the server only listens on IPv4
+ * (or vice versa); using the head blindly then fails every connect — on Linux
+ * `localhost` resolves to ::1 first, so an IPv4-only server is unreachable.
+ * Returns a node within `list` (caller still frees the whole list); falls back
+ * to the head if none probe-connect.
+ */
+static struct addrinfo *pick_reachable(struct addrinfo *list) {
+    for (struct addrinfo *a = list; a != NULL; a = a->ai_next) {
+        int fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+        if (fd < 0) continue;
+        int ok = (connect(fd, a->ai_addr, a->ai_addrlen) == 0);
+        close(fd);
+        if (ok) return a;
+    }
+    return list;
 }
 
 /* -------------------------------------------------------------------------
@@ -108,7 +130,7 @@ int main(int argc, char **argv) {
      *     The orchestrator never calls it.
      * ---------------------------------------------------------------- */
     signal(SIGPIPE, SIG_IGN);
-    http1_configure(addr, ssl_ctx, host);
+    http1_configure(pick_reachable(addr), ssl_ctx, host);
 
     /* ------------------------------------------------------------------
      * 4.  Build the scripting engine and configure it (ADR 0002 §3).
