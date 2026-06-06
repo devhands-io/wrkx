@@ -1,5 +1,5 @@
 title: Redis protocol skeleton — vtable, RESP codec, auth lifecycle
-status: todo
+status: completed
 adr: 0005
 adr-step: P2-1
 depends: —
