@@ -14,7 +14,8 @@ TARGET  := $(shell uname -s | tr '[A-Z]' '[a-z]' 2>/dev/null || echo unknown)
 # ---------------------------------------------------------------------------
 LAYER_SRC := src/main.c src/cli.c \
              src/orchestrator.c src/rate.c \
-             src/proto/http1.c src/transport.c \
+             src/proto/http1.c src/proto/redis.c src/proto/resp.c \
+             src/transport.c \
              src/scripting/lua/engine.c \
              src/scripting/session.c \
              src/scripting/lua/http1_helpers.c
@@ -113,6 +114,11 @@ TEST_HTTP1_BIN := obj/test_http1
 # (ADR 0001 Invariant 2 / "a protocol can be tested by feeding it raw bytes").
 HTTP1_DEPS     := src/proto/http1.c src/transport.c src/http_parser.c
 
+TEST_REDIS_SRC := tests/unit/test_redis.c
+TEST_REDIS_BIN := obj/test_redis
+# Protocol Engine deps for Redis: no libluajit, no orchestrator (ADR 0001 Invariant 2).
+REDIS_DEPS     := src/proto/redis.c src/proto/resp.c src/transport.c
+
 TEST_CLI_SRC := tests/unit/test_cli.c
 TEST_CLI_BIN := obj/test_cli
 # cli.c depends on ae.h (for aeGetApiName in -v output) and units.h.
@@ -129,15 +135,19 @@ LUA_ENGINE_DEPS := src/scripting/lua/engine.c src/scripting/session.c \
                    src/scripting/lua/http1_helpers.c \
                    src/proto/http1.c src/transport.c src/http_parser.c
 
-test-unit: $(TEST_UNIT_BIN) $(TEST_STATS_BIN) $(TEST_UNITS_BIN) $(TEST_HDR_BIN) $(TEST_SCRIPT_BIN) $(TEST_HTTP1_BIN) $(TEST_CLI_BIN) $(TEST_LUA_ENGINE_BIN)
+test-unit: $(TEST_UNIT_BIN) $(TEST_STATS_BIN) $(TEST_UNITS_BIN) $(TEST_HDR_BIN) $(TEST_SCRIPT_BIN) $(TEST_HTTP1_BIN) $(TEST_REDIS_BIN) $(TEST_CLI_BIN) $(TEST_LUA_ENGINE_BIN)
 	@./$(TEST_UNIT_BIN)
 	@./$(TEST_STATS_BIN)
 	@./$(TEST_UNITS_BIN)
 	@./$(TEST_HDR_BIN)
 	@./$(TEST_SCRIPT_BIN)
 	@./$(TEST_HTTP1_BIN)
+	@./$(TEST_REDIS_BIN)
 	@./$(TEST_CLI_BIN)
 	@./$(TEST_LUA_ENGINE_BIN)
+
+test-redis: $(TEST_REDIS_BIN)
+	@./$(TEST_REDIS_BIN)
 
 test-cli: $(TEST_CLI_BIN)
 	@./$(TEST_CLI_BIN)
@@ -165,6 +175,10 @@ $(TEST_CLI_BIN): $(TEST_CLI_SRC) $(UNITY_SRC) $(CLI_TEST_DEPS) | $(ODIR)
 		$(LDFLAGS) -lpthread -lm
 
 $(TEST_HTTP1_BIN): $(TEST_HTTP1_SRC) $(UNITY_SRC) $(HTTP1_DEPS) | $(ODIR)
+	@$(CC) $(CFLAGS) $(UNITY_INC) -Isrc $(LDFLAGS) \
+		-o $@ $^ $(filter -L%,$(LIBS)) -lssl -lcrypto -lpthread
+
+$(TEST_REDIS_BIN): $(TEST_REDIS_SRC) $(UNITY_SRC) $(REDIS_DEPS) | $(ODIR)
 	@$(CC) $(CFLAGS) $(UNITY_INC) -Isrc $(LDFLAGS) \
 		-o $@ $^ $(filter -L%,$(LIBS)) -lssl -lcrypto -lpthread
 
@@ -304,8 +318,22 @@ compare: $(BIN) baseline
 parity: $(BIN) baseline
 	@bash tests/e2e/parity.sh
 
+# Gate A: the Redis extension (t049) must not modify core engine files.
+# Compares working-tree + staged changes against HEAD (i.e., only what t049
+# added). The Phase 1 commits that legitimately changed orchestrator.c etc.
+# are already in HEAD and are excluded from this check.
+gate-a-check:
+	@changed=$$(git diff HEAD -- src/orchestrator.c src/orchestrator.h \
+	    src/proto/proto.h src/ae.c src/rate.c | grep -c '^[+-]' || true); \
+	if [ "$$changed" -gt 0 ]; then \
+	    echo "GATE A FAILED: core engine files modified by this change ($$changed lines)"; \
+	    exit 1; \
+	fi
+	@echo "Gate A: PASS (core engine files unchanged by t049)"
+
 .PHONY: all clean test test-unit test-e2e test-asan coverage contracts-check \
-        test-cli test-orchestrator test-http1 test-lua-engine adr-check \
+        test-cli test-orchestrator test-http1 test-redis test-lua-engine \
+        adr-check gate-a-check \
         baseline baseline-verify compare parity
 # test_script is intentionally absent from test-asan (LuaJIT + ASAN conflict)
 .SUFFIXES:
