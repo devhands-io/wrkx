@@ -1,0 +1,4 @@
+# extensions/toy/Makefile.ext — build fragment for the toy reference extension.
+# Included by the top-level Makefile when EXTENSIONS contains "toy".
+EXT_SRCS     += extensions/toy/toy.c
+EXT_INIT_FNS += wrkx_extension_init_toy

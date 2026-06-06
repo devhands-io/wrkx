@@ -44,6 +44,9 @@ jobs:
       - name: ASAN / UBSan
         run: make test-asan
 
+      - name: Extension build (toy) — header isolation + unit tests
+        run: make clean && make EXTENSIONS=toy && make EXTENSIONS=toy check-extension-headers test-unit
+
   # ---------------------------------------------------------------------------
   # Linux — GCC, system OpenSSL, full suite
   # Note: `make coverage` is macOS-only for now — gcov file-naming differs
@@ -81,3 +84,6 @@ jobs:
 
       - name: ASAN / UBSan
         run: make test-asan
+
+      - name: Extension build (toy) — header isolation + unit tests
+        run: make clean && make EXTENSIONS=toy && make EXTENSIONS=toy check-extension-headers test-unit
