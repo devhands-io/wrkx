@@ -806,9 +806,11 @@ int orchestrator_run(orchestrator *o) {
             long double runtime_s = elapsed / 1000000.0;
             long double req_per_s = runtime_s > 0 ? complete / runtime_s : 0;
             char *runtime_msg = format_time_us((long double)elapsed);
+            char *read_msg = format_binary((long double)bytes);
             printf("  %" PRIu64 " requests in %s, %sB read\n",
-                   complete, runtime_msg, format_binary((long double)bytes));
+                   complete, runtime_msg, read_msg);
             free(runtime_msg);
+            free(read_msg);
 
             if (agg.connect || agg.read || agg.write || agg.timeout) {
                 printf("  Socket errors: connect %u, read %u, write %u, "
@@ -823,7 +825,7 @@ int orchestrator_run(orchestrator *o) {
             printf("Transfer/sec: %10sB\n", bps);
             free(bps);
 
-            free(latency_stats);
+            stats_free(latency_stats);  /* zcalloc'd — free() crashes on glibc */
         }
     }
 
@@ -856,7 +858,7 @@ void orchestrator_destroy(orchestrator *o) {
         }
         free(o->threads);
     }
-    if (o->rps) free(o->rps);
+    if (o->rps) stats_free(o->rps);   /* zcalloc'd — free() crashes on glibc */
     if (o->latency_histogram)   free(o->latency_histogram);
     if (o->u_latency_histogram) free(o->u_latency_histogram);
     pthread_mutex_destroy(&o->rps_mutex);
