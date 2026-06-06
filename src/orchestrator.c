@@ -124,6 +124,14 @@ struct orchestrator {
     uint64_t                start_us;
     bool                    record_all_responses;
     uint64_t                timeout_ms;
+
+    /* t049-fix: static request bytes generated once in the main thread before
+     * workers start. All threads share the same read-only buffer.
+     * Generating it per-thread via api->request() is a data race: multiple
+     * threads calling lua_request() concurrently on the same lua_State →
+     * LuaJIT is not thread-safe → segfault at calibration startup. */
+    char                   *static_request_buf;
+    size_t                  static_request_len;
 };
 
 /*
@@ -438,15 +446,12 @@ static void *thread_main(void *arg) {
 
     uint64_t now = time_us();
 
-    /* If the script is static, fetch the request bytes once up front. */
+    /* Static request bytes are pre-generated in the main thread (orchestrator_run)
+     * before workers are spawned and written to o->static_request_buf. Copy the
+     * pointer here — no Lua call needed and no race on the shared lua_State. */
     if (!t->dynamic) {
-        const script_api *api = engine_api(o);
-        if (api && api->request && t->engine) {
-            size_t len = 0;
-            char *buf = api->request(t->engine, &len);
-            t->static_request = buf;
-            t->static_length  = len;
-        }
+        t->static_request = o->static_request_buf;
+        t->static_length  = o->static_request_len;
     }
 
     for (uint64_t i = 0; i < t->connections; i++) {
@@ -705,6 +710,15 @@ int orchestrator_run(orchestrator *o) {
     sigfillset(&sa.sa_mask);
     sigaction(SIGINT, &sa, NULL);
 
+    /* t049-fix: generate the static request buffer once, single-threaded, before
+     * any worker is spawned. api->request() calls into the lua_State; calling it
+     * from N threads simultaneously is a data race (LuaJIT is not thread-safe)
+     * that manifests as an intermittent segfault at calibration startup. Workers
+     * read o->static_request_buf as a read-only pointer — no lock needed. */
+    if (o->api && o->api->request && o->engine) {
+        o->static_request_buf = o->api->request(o->engine, &o->static_request_len);
+    }
+
     oprg_arg parg = { o, stop_at, 0 };
     pthread_t progress_thread;
     pthread_create(&progress_thread, NULL, progress_main, &parg);
@@ -861,6 +875,7 @@ void orchestrator_destroy(orchestrator *o) {
     if (o->rps) stats_free(o->rps);   /* zcalloc'd — free() crashes on glibc */
     if (o->latency_histogram)   free(o->latency_histogram);
     if (o->u_latency_histogram) free(o->u_latency_histogram);
+    free(o->static_request_buf);      /* generated once pre-spawn; free once here */
     pthread_mutex_destroy(&o->rps_mutex);
     free(o);
 }
