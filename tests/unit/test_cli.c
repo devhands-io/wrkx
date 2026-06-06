@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <getopt.h>
+#include <unistd.h>   /* dup, dup2, close, unlink */
 
 #include "unity.h"
 #include "cli.h"
@@ -184,7 +185,8 @@ void test_usage_mentions_l_flag(void) {
     FILE *f = fopen(tmppath, "r");
     TEST_ASSERT_NOT_NULL(f);
     char buf[4096] = {0};
-    fread(buf, 1, sizeof(buf) - 1, f);
+    size_t nread = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[nread] = '\0';
     fclose(f);
     unlink(tmppath);
 
