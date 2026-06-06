@@ -3,14 +3,15 @@
  *
  * Wires the three layers together:
  *   1. cli.c  — parse argv → orchestrator_cfg + url + script + headers
- *   2. http1_configure()  — resolve target + supply connect info (ADR 0002 §2)
- *   3. api->configure()   — supply URL/headers to Lua engine  (ADR 0002 §3)
- *   4. api->init()        — run wrk.init(); set up default request closure
- *   5. orchestrator_create/run/collect/destroy
+ *   2. Protocol detection — schema_table[] maps URL schema → protocol kind,
+ *      default port, and TLS flag; no scattered condition chains (t051)
+ *   3. <proto>_configure() — resolve target + supply connect info (ADR 0002 §2)
+ *   4. api->configure()   — supply URL/headers to Lua engine  (ADR 0002 §3)
+ *   5. api->init()        — run wrk.init(); set up default request closure
+ *   6. orchestrator_create/run/collect/destroy
  *
  * This is the only file that legitimately includes headers from all three
- * layers (it is the wiring, not a layer).  wrk.c's main() remains in the
- * legacy build until the Migration Map is fully checked off.
+ * layers (it is the wiring, not a layer).
  */
 
 #include <stdio.h>
@@ -29,12 +30,58 @@
 #include "cli.h"
 #include "orchestrator.h"
 #include "proto/http1.h"
+#include "proto/redis.h"
 #include "scripting/lua/engine.h"
+#include "scripting/lua/redis_helpers.h"
 #include "units.h"
 #include "http_parser.h"
 
 /* ssl_init() from ssl.c — declared directly to avoid ssl.h → net.h → wrk.h */
 extern SSL_CTX *ssl_init(void);
+
+/* -------------------------------------------------------------------------
+ * Protocol detection table
+ *
+ * Maps URL schema strings → (proto_kind, need_tls, default_port).
+ * To add a protocol: one table row + one enum value + one case below.
+ * ---------------------------------------------------------------------- */
+
+typedef enum { PROTO_HTTP, PROTO_REDIS } proto_kind;
+
+typedef struct {
+    proto_kind  kind;
+    bool        need_tls;
+    const char *default_port;
+} proto_info;
+
+typedef struct {
+    const char *schema;         /* plain variant:  "http",  "redis"  */
+    const char *schema_tls;     /* TLS variant:    "https", "rediss" */
+    const char *default_port;
+    proto_kind  kind;
+} schema_entry;
+
+static const schema_entry schema_table[] = {
+    { "http",  "https",  "80",   PROTO_HTTP  },
+    { "redis", "rediss", "6379", PROTO_REDIS },
+    { NULL,    NULL,     NULL,   PROTO_HTTP  },
+};
+
+static proto_info detect_protocol(const char *schema) {
+    proto_info info = { PROTO_HTTP, false, "80" };
+    if (!schema) return info;
+    for (const schema_entry *e = schema_table; e->schema; e++) {
+        if (strcmp(schema, e->schema) == 0) {
+            info = (proto_info){ e->kind, false, e->default_port };
+            return info;
+        }
+        if (strcmp(schema, e->schema_tls) == 0) {
+            info = (proto_info){ e->kind, true, e->default_port };
+            return info;
+        }
+    }
+    return info;  /* unknown schema: fall through to HTTP, no TLS */
+}
 
 /* -------------------------------------------------------------------------
  * URL decomposition helper (local to wiring)
@@ -88,20 +135,26 @@ int main(int argc, char **argv) {
     }
 
     /* ------------------------------------------------------------------
-     * 2.  Decompose URL and resolve the connect target.
+     * 2.  Decompose URL and detect protocol.
      * ---------------------------------------------------------------- */
     struct http_parser_url parts;
     memset(&parts, 0, sizeof(parts));
     http_parser_parse_url(args.url, strlen(args.url), 0, &parts);
 
-    char *schema  = url_part(args.url, &parts, UF_SCHEMA);
-    char *host    = url_part(args.url, &parts, UF_HOST);
-    char *port    = url_part(args.url, &parts, UF_PORT);
-    char *service = (port != NULL) ? port : schema;
+    char *schema = url_part(args.url, &parts, UF_SCHEMA);
+    char *host   = url_part(args.url, &parts, UF_HOST);
+    char *port   = url_part(args.url, &parts, UF_PORT);
 
-    /* TLS if scheme is "https" */
+    proto_info pi = detect_protocol(schema);
+
+    /* Default service port from the table; explicit URL port takes precedence. */
+    const char *service = port ? port : pi.default_port;
+
+    /* ------------------------------------------------------------------
+     * 3.  TLS setup — driven by the protocol table, not by schema string.
+     * ---------------------------------------------------------------- */
     SSL_CTX *ssl_ctx = NULL;
-    if (schema != NULL && strncmp("https", schema, 5) == 0) {
+    if (pi.need_tls) {
         ssl_ctx = ssl_init();
         if (ssl_ctx == NULL) {
             fprintf(stderr, "unable to initialise SSL\n");
@@ -110,7 +163,9 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* Resolve host:service → addrinfo */
+    /* ------------------------------------------------------------------
+     * 4.  Resolve host:service → addrinfo.
+     * ---------------------------------------------------------------- */
     struct addrinfo hints, *addr = NULL;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family   = AF_UNSPEC;
@@ -125,22 +180,44 @@ int main(int argc, char **argv) {
     }
 
     /* ------------------------------------------------------------------
-     * 3.  Configure the Protocol Engine (ADR 0002 Decision 2).
-     *     http1_configure() is called once before orchestrator_run().
-     *     The orchestrator never calls it.
+     * 5.  Configure the Protocol Engine (ADR 0002 Decision 2).
+     *     One case per protocol kind; all schema knowledge is in the table.
      * ---------------------------------------------------------------- */
     signal(SIGPIPE, SIG_IGN);
-    http1_configure(pick_reachable(addr), ssl_ctx, host);
+
+    switch (pi.kind) {
+        case PROTO_REDIS: {
+            /* redis://[password@]host[:port][/db]
+             * UF_USERINFO holds the password (no username in Redis auth).
+             * UF_PATH holds the db index as "/N" (default 0). */
+            char *password = url_part(args.url, &parts, UF_USERINFO);
+            char *path     = url_part(args.url, &parts, UF_PATH);
+            int   db       = (path && path[0] == '/' && path[1] != '\0')
+                             ? atoi(path + 1) : 0;
+            redis_configure(pick_reachable(addr), ssl_ctx, host, password, db);
+            free(password);
+            free(path);
+            break;
+        }
+        default:
+            http1_configure(pick_reachable(addr), ssl_ctx, host);
+            break;
+    }
 
     /* ------------------------------------------------------------------
-     * 4.  Build the scripting engine and configure it (ADR 0002 §3).
+     * 6.  Build the scripting engine and configure it (ADR 0002 §3).
      * ---------------------------------------------------------------- */
-    script_api *api    = lua_script_api();
+    script_api    *api = lua_script_api();
     script_engine *eng = api->create(args.script);
     if (eng == NULL) {
         fprintf(stderr, "failed to create scripting engine\n");
         return 1;
     }
+
+    /* Register protocol-specific Lua helpers before api->init() so the
+     * user's init() hook can call e.g. redis.command() during setup. */
+    if (pi.kind == PROTO_REDIS)
+        lua_register_redis_helpers(eng);
 
     if (api->configure) {
         api->configure(eng, args.url,
@@ -151,7 +228,7 @@ int main(int argc, char **argv) {
     api->init(eng, 0, args.cfg.connections);
 
     /* ------------------------------------------------------------------
-     * 5.  Run.
+     * 7.  Run.
      * ---------------------------------------------------------------- */
     char *runtime_msg = format_time_s(args.cfg.duration_us / 1000000ULL);
     printf("Running %s test @ %s\n", runtime_msg, args.url);
@@ -163,7 +240,9 @@ int main(int argc, char **argv) {
     args.cfg.latency_dist_only = args.latency_dist_only;
     args.cfg.u_latency         = args.u_latency;
 
-    orchestrator *o = orchestrator_create(args.cfg, http1_protocol(), api, eng);
+    protocol *proto = (pi.kind == PROTO_REDIS) ? redis_protocol()
+                                                : http1_protocol();
+    orchestrator *o = orchestrator_create(args.cfg, proto, api, eng);
     if (o == NULL) {
         fprintf(stderr, "failed to create orchestrator\n");
         return 1;

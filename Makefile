@@ -237,6 +237,7 @@ test-e2e:
 	@bash tests/e2e/lua_dynamic.sh
 	@bash tests/e2e/cli_output.sh
 	@bash tests/e2e/rate_close.sh
+	@bash tests/e2e/redis_basic.sh
 # ---------------------------------------------------------------------------
 # ASAN + UBSan unit tests
 # NOTE: the full wrkx binary is NOT instrumented here — LuaJIT's custom
