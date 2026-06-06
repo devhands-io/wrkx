@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
-Minimal RESP mock server for wrkx Redis E2E tests (ADR 0005, P2-3).
+Minimal RESP mock server for wrkx Redis E2E tests (ADR 0005, P2-3/P2-4).
 
-Usage: python3 redis_mock_server.py <port>
+Usage: python3 redis_mock_server.py <port> [delay_ms]
 
-Accepts TCP connections on <port>, speaks just enough RESP to satisfy the
-wrkx Redis protocol vtable:
+  port      — TCP port to listen on
+  delay_ms  — optional per-reply delay in milliseconds (default 0, instant)
+
+Accepts TCP connections, speaks just enough RESP to satisfy the wrkx Redis
+protocol vtable:
   - Handles AUTH and SELECT (issued in redis_connect() during connect handshake)
   - Handles PING, GET, SET, INCR, DEL and any unknown command
   - Handles pipelining (multiple commands arriving in one recv())
@@ -17,6 +20,7 @@ Redis installation.
 
 import sys
 import socket
+import time
 import threading
 
 # Canned RESP replies, keyed by command name (upper-case bytes).
@@ -78,7 +82,7 @@ def parse_resp_command(buf):
     return cmd, pos
 
 
-def handle(conn):
+def handle(conn, delay_s=0.0):
     buf = b""
     try:
         while True:
@@ -93,6 +97,8 @@ def handle(conn):
                     break   # need more data from the network
                 buf = buf[consumed:]
                 if cmd is not None:
+                    if delay_s > 0:
+                        time.sleep(delay_s)
                     conn.sendall(REPLIES.get(cmd, DEFAULT_REPLY))
     except (ConnectionResetError, BrokenPipeError):
         pass
@@ -104,11 +110,13 @@ def handle(conn):
 
 
 def main():
-    if len(sys.argv) != 2:
-        print(f"Usage: {sys.argv[0]} <port>", file=sys.stderr)
+    if len(sys.argv) not in (2, 3):
+        print(f"Usage: {sys.argv[0]} <port> [delay_ms]", file=sys.stderr)
         sys.exit(1)
 
-    port = int(sys.argv[1])
+    port     = int(sys.argv[1])
+    delay_s  = int(sys.argv[2]) / 1000.0 if len(sys.argv) == 3 else 0.0
+
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(("127.0.0.1", port))
@@ -119,7 +127,7 @@ def main():
             conn, _ = srv.accept()
         except OSError:
             break
-        t = threading.Thread(target=handle, args=(conn,), daemon=True)
+        t = threading.Thread(target=handle, args=(conn, delay_s), daemon=True)
         t.start()
 
 

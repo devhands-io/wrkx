@@ -192,7 +192,7 @@ void test_command_non_string_arg_raises_error(void) {
 }
 
 /* -------------------------------------------------------------------------
- * redis.pipeline() — stub raises error
+ * redis.pipeline() — no-args error (previously tested stub message)
  * ---------------------------------------------------------------------- */
 
 void test_pipeline_stub_raises_error(void) {
@@ -204,7 +204,7 @@ void test_pipeline_stub_raises_error(void) {
     TEST_ASSERT_NOT_EQUAL(0, rc);
     const char *err = lua_tostring(L, -1);
     TEST_ASSERT_NOT_NULL(err);
-    TEST_ASSERT_NOT_NULL(strstr(err, "not yet implemented"));
+    TEST_ASSERT_NOT_NULL(strstr(err, "at least one command required"));
     lua_pop(L, 1);
 }
 
@@ -230,6 +230,73 @@ void test_redis_pipeline_is_callable(void) {
     lua_getfield(L, -1, "pipeline");
     TEST_ASSERT_TRUE(lua_isfunction(L, -1));
     lua_pop(L, 2);
+}
+
+/* -------------------------------------------------------------------------
+ * redis.pipeline() — concatenation and error cases
+ * ---------------------------------------------------------------------- */
+
+void test_pipeline_single_command(void) {
+    /* redis.pipeline(redis.command("PING")) == redis.command("PING") */
+    call_redis_command(1, "PING");
+    size_t cmd_len;
+    const char *cmd_bytes = lua_tolstring(L, -1, &cmd_len);
+    char *cmd_copy = malloc(cmd_len);
+    memcpy(cmd_copy, cmd_bytes, cmd_len);
+    lua_pop(L, 1);
+
+    /* Now call redis.pipeline() with one pre-encoded string. */
+    lua_getglobal(L, "redis");
+    lua_getfield(L, -1, "pipeline");
+    lua_remove(L, -2);
+    lua_pushlstring(L, cmd_copy, cmd_len);
+    TEST_ASSERT_EQUAL_INT(0, lua_pcall(L, 1, 1, 0));
+    size_t pipe_len;
+    const char *pipe_bytes = lua_tolstring(L, -1, &pipe_len);
+    TEST_ASSERT_EQUAL_UINT(cmd_len, pipe_len);
+    TEST_ASSERT_EQUAL_MEMORY(cmd_copy, pipe_bytes, pipe_len);
+    lua_pop(L, 1);
+    free(cmd_copy);
+}
+
+void test_pipeline_two_commands_concatenated(void) {
+    /* redis.pipeline(cmd1, cmd2) should equal cmd1 .. cmd2 in Lua. */
+    const char *ping_resp = "*1\r\n$4\r\nPING\r\n";
+    const char *set_resp  = "*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n";
+    size_t total = strlen(ping_resp) + strlen(set_resp);
+
+    lua_getglobal(L, "redis");
+    lua_getfield(L, -1, "pipeline");
+    lua_remove(L, -2);
+    lua_pushstring(L, ping_resp);
+    lua_pushstring(L, set_resp);
+    TEST_ASSERT_EQUAL_INT(0, lua_pcall(L, 2, 1, 0));
+
+    size_t len;
+    const char *result = lua_tolstring(L, -1, &len);
+    TEST_ASSERT_EQUAL_UINT(total, len);
+    TEST_ASSERT_EQUAL_MEMORY(ping_resp, result, strlen(ping_resp));
+    TEST_ASSERT_EQUAL_MEMORY(set_resp, result + strlen(ping_resp), strlen(set_resp));
+    lua_pop(L, 1);
+}
+
+void test_pipeline_no_args_raises_error(void) {
+    lua_getglobal(L, "redis");
+    lua_getfield(L, -1, "pipeline");
+    lua_remove(L, -2);
+    int rc = lua_pcall(L, 0, 1, 0);
+    TEST_ASSERT_NOT_EQUAL(0, rc);
+    lua_pop(L, 1);
+}
+
+void test_pipeline_non_string_arg_raises_error(void) {
+    lua_getglobal(L, "redis");
+    lua_getfield(L, -1, "pipeline");
+    lua_remove(L, -2);
+    lua_pushnumber(L, 42.0);
+    int rc = lua_pcall(L, 1, 1, 0);
+    TEST_ASSERT_NOT_EQUAL(0, rc);
+    lua_pop(L, 1);
 }
 
 /* -------------------------------------------------------------------------
@@ -282,6 +349,12 @@ int main(void) {
     RUN_TEST(test_command_no_args_raises_error);
     RUN_TEST(test_command_non_string_arg_raises_error);
     RUN_TEST(test_pipeline_stub_raises_error);
+
+    /* redis.pipeline() */
+    RUN_TEST(test_pipeline_single_command);
+    RUN_TEST(test_pipeline_two_commands_concatenated);
+    RUN_TEST(test_pipeline_no_args_raises_error);
+    RUN_TEST(test_pipeline_non_string_arg_raises_error);
 
     /* Integration */
     RUN_TEST(test_command_bytes_usable_as_request);

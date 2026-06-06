@@ -2,12 +2,12 @@
 #define REDIS_H
 
 /*
- * Redis protocol extension (ADR 0005, Phase 2, P2-1).
+ * Redis protocol extension (ADR 0005, Phase 2).
  *
- * Implements the `protocol` vtable for Redis over RESP. One command per
- * request (no pipelining — deferred to t052). AUTH and SELECT are handled
- * synchronously inside connect(), keeping the orchestrator's event loop
- * unaware of the connection handshake.
+ * Implements the `protocol` vtable for Redis over RESP. AUTH and SELECT are
+ * handled synchronously inside connect(). Pipelining (t052) is a protocol
+ * concern: the vtable auto-detects how many commands are in the write buffer
+ * and accumulates that many responses before returning PROTO_DONE.
  *
  * Invariant 2: no scripting header is included here.
  */
@@ -38,8 +38,8 @@ protocol *redis_protocol(void);
  * Returns the buffer (caller must free) and sets *len_out to its length.
  * Returns NULL on allocation failure or encode error.
  *
- * This is the public API used by the Lua glue module (redis_helpers.c) so
- * that glue only includes proto/redis.h — never proto/resp.h directly.
+ * Used by the Lua glue module so redis_helpers.c only includes proto/redis.h,
+ * never proto/resp.h directly (Invariant 4 / grep check).
  */
 char *redis_make_request(int argc, const char * const *argv,
                          const size_t *arglens, size_t *len_out);

@@ -305,6 +305,101 @@ void test_redis_two_responses_one_connection(void) {
 }
 
 /* =========================================================================
+ * Pipeline tests (depth > 1)
+ * ====================================================================== */
+
+/*
+ * Helper: send N RESP-encoded commands as one write() call (simulating what
+ * the orchestrator does when the Lua request() returns redis.pipeline(…)).
+ * Returns the number of bytes accepted.
+ */
+static int pipeline_write(int n, const char *cmd_resp) {
+    /* Build a buffer with n copies of cmd_resp concatenated. */
+    size_t clen  = strlen(cmd_resp);
+    size_t total = clen * (size_t)n;
+    char  *buf   = malloc(total);
+    TEST_ASSERT_NOT_NULL(buf);
+    for (int i = 0; i < n; i++)
+        memcpy(buf + i * clen, cmd_resp, clen);
+    int rc = redis_proto->write(&conn, buf, total);
+    free(buf);
+    return rc;
+}
+
+void test_pipeline_depth2_both_ok(void) {
+    /* Write 2 PING commands as a pipeline. */
+    const char *ping = "*1\r\n$4\r\nPING\r\n";
+    pipeline_write(2, ping);
+
+    /* Drain the bytes the server received. */
+    char drain[128];
+    recv(server_fd, drain, sizeof(drain), MSG_DONTWAIT);
+
+    /* Protocol expects 2 replies before returning PROTO_DONE. */
+    /* Send first reply — should return PROTO_PENDING. */
+    server_send("+PONG\r\n", 7);
+    TEST_ASSERT_EQUAL_INT(PROTO_PENDING, drive_readable());
+
+    /* Send second reply — should now return PROTO_DONE. */
+    server_send("+PONG\r\n", 7);
+    TEST_ASSERT_EQUAL_INT(PROTO_DONE, drive_readable());
+    /* bytes should be sum of both replies: 7 + 7 = 14 */
+    TEST_ASSERT_EQUAL_UINT(14, (unsigned)conn.bytes);
+}
+
+void test_pipeline_depth3_accumulated_bytes(void) {
+    /* GET key → $5\r\nvalue\r\n (11 bytes each) */
+    const char *get = "*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
+    pipeline_write(3, get);
+    char drain[256];
+    recv(server_fd, drain, sizeof(drain), MSG_DONTWAIT);
+
+    /* All 3 replies arrive in one server_send (simulating pipelining). */
+    const char *three_replies = "$5\r\nvalue\r\n$5\r\nvalue\r\n$5\r\nvalue\r\n";
+    server_send(three_replies, strlen(three_replies));
+
+    /* May take multiple readable() calls if data arrives in chunks, but
+     * in practice one recv() delivers all 33 bytes on loopback. */
+    proto_status st = drive_readable();
+    /* Could be PROTO_PENDING if data hasn't arrived yet — loop a bit. */
+    for (int i = 0; i < 10 && st == PROTO_PENDING; i++) {
+        usleep(2000);
+        st = drive_readable();
+    }
+    TEST_ASSERT_EQUAL_INT(PROTO_DONE, st);
+    /* 3 × 11 bytes = 33  ($5\r\nvalue\r\n = 1+1+2+5+2 = 11) */
+    TEST_ASSERT_EQUAL_UINT(33, (unsigned)conn.bytes);
+}
+
+void test_pipeline_depth2_error_in_second(void) {
+    /* Two commands: first OK, second an error reply. */
+    const char *ping = "*1\r\n$4\r\nPING\r\n";
+    pipeline_write(2, ping);
+    char drain[128];
+    recv(server_fd, drain, sizeof(drain), MSG_DONTWAIT);
+
+    server_send("+PONG\r\n", 7);
+    TEST_ASSERT_EQUAL_INT(PROTO_PENDING, drive_readable());
+
+    server_send("-ERR oops\r\n", 11);
+    proto_status st = drive_readable();
+    TEST_ASSERT_EQUAL_INT(PROTO_DONE_STATUS_ERR, st);
+}
+
+void test_pipeline_depth1_unchanged(void) {
+    /* Depth 1 is the existing behaviour — single command, single reply. */
+    const char *set = "*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n";
+    int wrc = redis_proto->write(&conn, set, strlen(set));
+    TEST_ASSERT_TRUE(wrc >= 0);
+    char drain[64];
+    recv(server_fd, drain, sizeof(drain), MSG_DONTWAIT);
+
+    server_send("+OK\r\n", 5);
+    TEST_ASSERT_EQUAL_INT(PROTO_DONE, drive_readable());
+    TEST_ASSERT_EQUAL_UINT(5, (unsigned)conn.bytes);
+}
+
+/* =========================================================================
  * main
  * ====================================================================== */
 
@@ -337,6 +432,12 @@ int main(void) {
     RUN_TEST(test_redis_readable_partial_then_done);
     RUN_TEST(test_redis_readable_peer_close_is_error);
     RUN_TEST(test_redis_two_responses_one_connection);
+
+    /* Pipeline (depth > 1) */
+    RUN_TEST(test_pipeline_depth1_unchanged);
+    RUN_TEST(test_pipeline_depth2_both_ok);
+    RUN_TEST(test_pipeline_depth3_accumulated_bytes);
+    RUN_TEST(test_pipeline_depth2_error_in_second);
 
     int result = UNITY_END();
 

@@ -85,13 +85,57 @@ static int lua_redis_command(void *engine_ctx) {
 }
 
 /*
- * redis.pipeline(...) -> error
+ * redis.pipeline(cmd1, cmd2, ...) -> string
  *
- * Stub that raises a Lua error. Pipelining is deferred to t052 (Gate B).
+ * Concatenates pre-encoded RESP strings (each produced by redis.command())
+ * into one buffer. The resulting string, when returned from request(), causes
+ * the Redis protocol vtable to send all commands in one write and accumulate
+ * all replies before returning PROTO_DONE — the pipeline depth is auto-detected
+ * from the number of RESP top-level values in the buffer.
+ *
+ * Example:
+ *   function request()
+ *       local key = "k:" .. math.random(1, 1000)
+ *       return redis.pipeline(
+ *           redis.command("SET", key, "val"),
+ *           redis.command("GET", key)
+ *       )
+ *   end
  */
 static int lua_redis_pipeline(void *engine_ctx) {
     lua_State *L = (lua_State *) engine_ctx;
-    return luaL_error(L, "redis.pipeline: not yet implemented — see t052");
+    int argc = lua_gettop(L);
+
+    if (argc == 0)
+        return luaL_error(L, "redis.pipeline: at least one command required");
+
+    /* First pass: validate args and compute total length. */
+    size_t total = 0;
+    for (int i = 1; i <= argc; i++) {
+        if (lua_type(L, i) != LUA_TSTRING)
+            return luaL_error(L, "redis.pipeline: argument %d must be a "
+                              "RESP string (from redis.command())", i);
+        size_t len;
+        lua_tolstring(L, i, &len);
+        total += len;
+    }
+
+    char *buf = malloc(total);
+    if (!buf)
+        return luaL_error(L, "redis.pipeline: out of memory");
+
+    /* Second pass: concatenate. */
+    size_t pos = 0;
+    for (int i = 1; i <= argc; i++) {
+        size_t len;
+        const char *s = lua_tolstring(L, i, &len);
+        memcpy(buf + pos, s, len);
+        pos += len;
+    }
+
+    lua_pushlstring(L, buf, total);
+    free(buf);
+    return 1;
 }
 
 static const script_helper redis_helpers[] = {

@@ -56,7 +56,10 @@ typedef struct redis_state {
     size_t     rbuf_len;           /* bytes currently buffered                  */
     bool       done;               /* last readable() returned PROTO_DONE*      */
     bool       error;              /* last readable() returned PROTO_ERROR      */
-    size_t     bytes;              /* wire bytes of the completed response      */
+    bool       has_error_reply;    /* any '-' reply in the current pipeline     */
+    size_t     bytes;              /* accumulated wire bytes for current batch  */
+    uint32_t   pending_responses;  /* commands whose replies are still awaited  */
+    uint32_t   responses_received; /* replies parsed so far this batch          */
 } redis_state;
 
 /* -------------------------------------------------------------------------
@@ -184,6 +187,25 @@ static int redis_connect(connection *c) {
  * vtable: write
  * ---------------------------------------------------------------------- */
 
+/*
+ * Count how many complete top-level RESP values (commands) are in buf.
+ * Used to tell readable() how many replies to expect for a pipelined batch.
+ * Reuses resp_parse(), which handles all five RESP types including arrays
+ * (the encoding used for Redis commands: *N\r\n$len\r\ncmd\r\n...).
+ */
+static uint32_t count_resp_commands(const char *buf, size_t len) {
+    uint32_t count = 0;
+    size_t   pos   = 0;
+    while (pos < len) {
+        size_t consumed = 0;
+        int rc = resp_parse(buf + pos, len - pos, &consumed);
+        if (rc <= 0) break;
+        count++;
+        pos += consumed;
+    }
+    return count;
+}
+
 static int redis_write(connection *c, const char *buf, size_t len) {
     redis_state *s = c->proto_state;
     if (!s) return -1;
@@ -195,13 +217,21 @@ static int redis_write(connection *c, const char *buf, size_t len) {
         default:              return -1;
     }
 
-    /* A new request starts after the previous response was completed.
-     * Reset the response buffer so readable() parses the next reply fresh. */
-    if (s->done || s->error) {
-        s->rbuf_len = 0;
-        s->done     = false;
-        s->error    = false;
-        s->bytes    = 0;
+    /* A new request starts after the previous batch completed, or on the very
+     * first write (pending_responses == 0 from calloc). Reset parsing state
+     * and count how many commands are in the new buffer so readable() knows
+     * how many replies to accumulate before returning PROTO_DONE. */
+    if (s->done || s->error || s->pending_responses == 0) {
+        s->rbuf_len          = 0;
+        s->done              = false;
+        s->error             = false;
+        s->has_error_reply   = false;
+        s->bytes             = 0;
+        s->responses_received = 0;
+        s->pending_responses  = (buf && len > 0)
+                                ? count_resp_commands(buf, len)
+                                : 1;
+        if (s->pending_responses == 0) s->pending_responses = 1;
     }
 
     if (len == 0) return 0;
@@ -229,6 +259,10 @@ static proto_status redis_readable(connection *c) {
         default:              return PROTO_ERROR;
     }
 
+    /* Safety: if the connection was not yet used for a write() call
+     * (e.g. in unit tests that drive readable() directly), expect 1 reply. */
+    if (s->pending_responses == 0) s->pending_responses = 1;
+
     /* Read available bytes into the tail of rbuf. */
     if (s->rbuf_len < sizeof(s->rbuf)) {
         size_t n = 0;
@@ -252,30 +286,34 @@ static proto_status redis_readable(connection *c) {
         }
     }
 
-    /* Attempt to parse one complete RESP response from the buffer. */
-    size_t consumed = 0;
-    int rc = resp_parse(s->rbuf, s->rbuf_len, &consumed);
-    if (rc == 0) return PROTO_PENDING;
-    if (rc < 0) {
-        s->error = true;
-        return PROTO_ERROR;
+    /* Parse as many complete RESP responses as are available in rbuf.
+     * For pipelining, the batch is complete when responses_received reaches
+     * pending_responses. For single-command use, pending_responses == 1. */
+    while (s->responses_received < s->pending_responses) {
+        size_t consumed = 0;
+        int rc = resp_parse(s->rbuf, s->rbuf_len, &consumed);
+        if (rc == 0) return PROTO_PENDING;
+        if (rc < 0) {
+            s->error = true;
+            return PROTO_ERROR;
+        }
+
+        if (s->rbuf[0] == '-') s->has_error_reply = true;
+
+        s->bytes += consumed;
+        s->responses_received++;
+
+        size_t remaining = s->rbuf_len - consumed;
+        if (remaining > 0)
+            memmove(s->rbuf, s->rbuf + consumed, remaining);
+        s->rbuf_len = remaining;
     }
 
-    /* Classify: a RESP error reply ('-') maps to PROTO_DONE_STATUS_ERR. */
-    proto_status result = (s->rbuf[0] == '-') ? PROTO_DONE_STATUS_ERR
-                                               : PROTO_DONE;
-
-    /* Surface wire size and consume the bytes from the buffer. */
-    c->bytes = consumed;
-    s->bytes = consumed;
+    /* All pending replies received — surface the accumulated wire size. */
+    c->bytes = s->bytes;
     s->done  = true;
 
-    size_t remaining = s->rbuf_len - consumed;
-    if (remaining > 0)
-        memmove(s->rbuf, s->rbuf + consumed, remaining);
-    s->rbuf_len = remaining;
-
-    return result;
+    return s->has_error_reply ? PROTO_DONE_STATUS_ERR : PROTO_DONE;
 }
 
 /* -------------------------------------------------------------------------
