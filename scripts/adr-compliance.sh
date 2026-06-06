@@ -105,12 +105,17 @@ fi
 # accurate.  We skip it here to avoid false positives from multi-line calls.)
 
 # ---------------------------------------------------------------------------
-# ADR 0002 Decision 2: every protocol implementation must expose a
-# <proto>_configure function.  Check that each proto/*.c has one.
+# ADR 0002 Decision 2: every protocol vtable implementation must expose a
+# <proto>_configure function.  A file is considered a protocol vtable
+# implementation only if it exposes a <proto>_protocol() getter — codec
+# utilities (e.g. resp.c) that live in proto/ but don't own a vtable are
+# exempt.
 # ---------------------------------------------------------------------------
 for proto_c in "$SRC"/proto/*.c; do
     [ -f "$proto_c" ] || continue
     proto_name="$(basename "${proto_c%.c}")"
+    # Skip files that don't expose a <proto>_protocol() vtable getter.
+    grep -qE "${proto_name}_protocol[[:space:]]*\(" "$proto_c" 2>/dev/null || continue
     if ! grep -qE "${proto_name}_configure[[:space:]]*\(" "$proto_c" 2>/dev/null; then
         fail "ADR 0002 §2 — proto $proto_name lacks <proto>_configure()\n  offending file: $proto_c"
     fi
