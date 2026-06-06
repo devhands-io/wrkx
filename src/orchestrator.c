@@ -22,6 +22,7 @@
 #include <pthread.h>
 #include <inttypes.h>
 #include <unistd.h>
+#include <sched.h>
 
 #include "orchestrator.h"
 #include "proto/proto.h"
@@ -118,6 +119,7 @@ struct orchestrator {
 
     /* Calibration / progress / drain state (formerly globals). */
     volatile int            calibrated_threads;
+    volatile int            workers_ready;   /* workers that have entered aeMain */
     volatile sig_atomic_t   stop;
     uint64_t                start_us;
     bool                    record_all_responses;
@@ -423,20 +425,6 @@ static int check_timeouts(aeEventLoop *loop, long long id, void *data) {
     return TIMEOUT_INTERVAL_MS;
 }
 
-/*
- * One-shot timer (t043): wake the event loop AT stop_at and stop it. Without
- * this the loop sleeps until the next per-connection send timer (~one inter-send
- * interval; ~9ms at low per-connection rates), then notices stop_at on the
- * resulting completion — charging that dead interval to runtime_us (~0.05% over
- * a 20s run) and under-reporting Requests/sec. check_timeouts also stops past
- * stop_at, but only every TIMEOUT_INTERVAL_MS (2s), so the send path always wins.
- */
-static int stop_event(aeEventLoop *loop, long long id, void *data) {
-    (void)id; (void)data;
-    aeStop(loop);
-    return AE_NOMORE;
-}
-
 /* ------------------------------------------------------------------------- */
 /* Thread main                                                               */
 /* ------------------------------------------------------------------------- */
@@ -477,11 +465,16 @@ static void *thread_main(void *arg) {
     aeCreateTimeEvent(t->loop, calibrate_delay, calibrate, t, NULL);
     aeCreateTimeEvent(t->loop, timeout_delay, check_timeouts, t, NULL);
 
-    /* t043: fire exactly at stop_at so the loop stops promptly instead of
-     * sleeping until the next ~9ms send timer (which inflates runtime_us). */
-    int64_t  stop_in_us = (int64_t)t->stop_at - (int64_t)time_us();
-    long long stop_in_ms = stop_in_us > 0 ? stop_in_us / 1000 : 0;
-    aeCreateTimeEvent(t->loop, stop_in_ms, stop_event, t, NULL);
+    /* t044: signal that this worker has finished setup and is about to start
+     * driving load. orchestrator_run() blocks on this barrier before capturing
+     * run_start, so the measured window begins at actual load-start (when every
+     * worker is in its loop with connects scheduled), not merely when
+     * pthread_create returned. pthread_create returning does NOT mean the thread
+     * is running; capturing run_start too early lengthens the measured window
+     * and under-reports Requests/sec. Phase-0 wrk.c gets the same effect
+     * implicitly: its create loop runs script_create() per thread, so by the
+     * time it captures `start` the workers have already spun up. */
+    __sync_fetch_and_add(&o->workers_ready, 1);
 
     aeMain(t->loop);
 
@@ -730,7 +723,17 @@ int orchestrator_run(orchestrator *o) {
      * (the test still stops at a fixed wall-clock duration); `run_start` is the
      * runtime clock captured *after* the create loop — matching phase-0
      * wrk.c's `start = time_us()`. Reporting elapsed from o->start_us instead
-     * would charge setup time to the test window and under-report Requests/sec. */
+     * would charge setup time to the test window and under-report Requests/sec.
+     *
+     * t044: additionally block until every worker has finished setup and entered
+     * its event loop (workers_ready == n_threads). pthread_create returning does
+     * NOT mean the thread is running; capturing run_start right after the create
+     * loop starts the measured window before load is actually flowing, which
+     * lengthens runtime_us and under-reports Requests/sec. Phase-0 gets this for
+     * free (its create loop does per-thread script_create, so the workers have
+     * spun up by the time it reads `start`). Bounded by thread spin-up (~ms). */
+    while (__sync_fetch_and_add(&o->workers_ready, 0) < (int)o->n_threads)
+        sched_yield();
     uint64_t run_start = time_us();
 
     for (uint64_t i = 0; i < o->n_threads; i++)
