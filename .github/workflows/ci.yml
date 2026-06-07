@@ -53,6 +53,17 @@ jobs:
       - name: Extension build (none) — HTTP-only binary + redis:// error
         run: make clean && make EXTENSIONS= && ./wrkx -t1 -c1 -d1s -R1 redis://localhost:9 2>&1 | grep -q 'no extension provides'
 
+      - name: Install memcached (macOS)
+        run: brew install memcached
+
+      - name: Extension build (memcached) — real service E2E (macOS)
+        run: |
+          memcached -d -p 11211 -l 127.0.0.1
+          sleep 0.3
+          make clean && make EXTENSIONS=memcached
+          bash tests/e2e/memcached_real.sh
+          pkill memcached || true
+
   # ---------------------------------------------------------------------------
   # Linux — GCC, system OpenSSL, full suite
   # Note: `make coverage` is macOS-only for now — gcov file-naming differs
@@ -63,6 +74,12 @@ jobs:
   linux:
     name: Build & Test (Linux)
     runs-on: ubuntu-latest
+
+    services:
+      memcached:
+        image: memcached:alpine
+        ports:
+          - 11211:11211
 
     steps:
       - uses: actions/checkout@v4
@@ -99,3 +116,6 @@ jobs:
 
       - name: Extension build (none) — HTTP-only binary + redis:// error
         run: make clean && make EXTENSIONS= && ./wrkx -t1 -c1 -d1s -R1 redis://localhost:9 2>&1 | grep -q 'no extension provides'
+
+      - name: Extension build (memcached) — real service E2E (Linux)
+        run: make clean && make EXTENSIONS=memcached && bash tests/e2e/memcached_real.sh

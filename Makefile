@@ -364,6 +364,13 @@ test-e2e:
 	@bash tests/e2e/memcached_set_delete.sh
 	@bash tests/e2e/memcached_counters.sh
 	@bash tests/e2e/memcached_robustness.sh
+
+# Run E2E suite against a real memcached service (requires memcached running).
+# Local: memcached -d && make EXTENSIONS=memcached test-memcached-real
+# CI:    started automatically via service container (Linux) or brew (macOS).
+test-memcached-real:
+	@bash tests/e2e/memcached_real.sh
+
 # ---------------------------------------------------------------------------
 # ASAN + UBSan unit tests
 # NOTE: the full wrkx binary is NOT instrumented here — LuaJIT's custom
