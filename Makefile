@@ -570,6 +570,9 @@ parity: $(BIN) baseline
 # Compares working-tree + staged changes against HEAD (i.e., only what t049
 # added). The Phase 1 commits that legitimately changed orchestrator.c etc.
 # are already in HEAD and are excluded from this check.
+gate-d:
+	@bash tests/e2e/gate_d.sh
+
 gate-a-check:
 	@changed=$$(git diff HEAD -- src/orchestrator.c src/orchestrator.h \
 	    src/proto/proto.h src/ae.c src/rate.c | grep -c '^[+-]' || true); \
@@ -584,7 +587,7 @@ gate-a-check:
         test-extension-api test-memcached-extension test-mc-codec test-mc-request test-mc-lua \
         test-quickjs-engine test-quickjs-redis test-e2e-quickjs \
         check-extension-headers \
-        adr-check gate-a-check \
+        adr-check gate-a-check gate-d \
         baseline baseline-verify compare parity
 # test_script is intentionally absent from test-asan (LuaJIT + ASAN conflict)
 .SUFFIXES:

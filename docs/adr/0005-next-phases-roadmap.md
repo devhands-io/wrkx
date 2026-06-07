@@ -332,6 +332,32 @@ Guards:
 - **Gate D confirmed:** one protocol (Redis), two scripting engines, same core engine,
   same output
 
+### Gate D result — 2026-06-07
+
+**Engines:** LuaJIT (built-in) · QuickJS v0.10.0 (vendored, `deps/quickjs/`)  
+**Baseline tag:** `p5-baseline` → commit `0502931` (chore: remove t070 from active tasks)  
+**Workload:** `scripts/redis_get_set.{lua,js}` — deterministic GET/SET alternation
+across 100 keys (`-t1 -c1 -d2s -R20`, 41 commands each run)
+
+```
+PASS  frozen core+protocol unchanged since p5-baseline
+PASS  LuaJIT build
+PASS  QuickJS build
+PASS  Lua/JS Redis request parity
+
+Gate D: 4 passed, 0 failed
+```
+
+**Frozen paths verified clean** (no diff from `p5-baseline` to HEAD):
+`src/orchestrator.*`, `src/ae.*`, `src/rate.*`, `src/net.*`, `src/transport.*`,
+`include/wrkx_extension.h`, `include/wrkx_transport.h`,
+`extensions/redis/redis.{c,h}`
+
+**Conclusion:** The `script_api` vtable is not Lua-shaped. The QuickJS engine
+implements it (create/configure/capabilities/register\_helpers/clone/init/
+request/response/destroy) without a single line of change to the protocol layer,
+orchestrator, or event loop. Gate D is confirmed.
+
 ---
 
 ## Phase 6 — Stateful database protocols

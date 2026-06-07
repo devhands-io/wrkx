@@ -1,8 +1,11 @@
 -- scripts/redis_get_set.lua
 --
--- Example Redis workload for wrkx (ADR 0005, P2-3).
+-- Example Redis workload for wrkx (ADR 0005, P2-3; updated t076 for parity).
 --
--- Alternates between GET and SET on a pool of 100 keys.
+-- Alternates between GET and SET on a pool of 100 keys using a deterministic
+-- counter so the Lua/JS parity test (parity_lua_quickjs.sh) can compare the
+-- exact wire-command multiset.
+--
 -- Use with:
 --   ./wrkx -t4 -c100 -d10s -R1000 -s scripts/redis_get_set.lua redis://localhost:6379
 
@@ -10,7 +13,7 @@ local counter = 0
 
 function request()
     counter = counter + 1
-    local key = "key:" .. math.random(1, 100)
+    local key = "wrkx:key:" .. (counter % 100)
     if counter % 2 == 0 then
         return redis.command("SET", key, "value")
     else
