@@ -176,7 +176,8 @@ MEMCACHED_EXT_DEPS     := extensions/memcached/mc_codec.c \
                           extensions/memcached/mc_request.c \
                           extensions/memcached/mc_lua_helpers.c \
                           extensions/memcached/memcached.c \
-                          extensions/memcached/init.c
+                          extensions/memcached/init.c \
+                          src/transport.c
 
 TEST_MC_CODEC_SRC  := tests/unit/test_mc_codec.c
 TEST_MC_CODEC_BIN  := obj/test_mc_codec
@@ -252,7 +253,7 @@ $(TEST_EXT_API_BIN): $(TEST_EXT_API_SRC) $(UNITY_SRC) $(EXT_TOY_SRC) | $(ODIR)
 
 $(TEST_MEMCACHED_EXT_BIN): $(TEST_MEMCACHED_EXT_SRC) $(UNITY_SRC) $(MEMCACHED_EXT_DEPS) \
                            $(LDIR)/libluajit.a | $(ODIR)
-	@$(CC) $(CFLAGS) $(UNITY_INC) -Iinclude -Iextensions/memcached -I$(LDIR) \
+	@$(CC) $(CFLAGS) $(UNITY_INC) -Iinclude -Iextensions/memcached -Isrc -I$(LDIR) \
 		-o $@ $(TEST_MEMCACHED_EXT_SRC) $(UNITY_SRC) $(MEMCACHED_EXT_DEPS) \
 		$(LDFLAGS) $(LIBS)
 
@@ -359,6 +360,7 @@ test-e2e:
 	@bash tests/e2e/rate_close.sh
 	@bash tests/e2e/redis_basic.sh
 	@bash tests/e2e/redis_pipeline.sh
+	@bash tests/e2e/memcached_basic.sh
 # ---------------------------------------------------------------------------
 # ASAN + UBSan unit tests
 # NOTE: the full wrkx binary is NOT instrumented here — LuaJIT's custom
