@@ -85,12 +85,13 @@ typedef struct othread {
     uint64_t              id;
     uint64_t              connections;
     double                throughput;    /* per-connection req/usec           */
-    uint64_t              stop_at;
     int                   interval;       /* rate sampling interval (ms)       */
     uint64_t              sample_start;
     uint64_t              requests;        /* requests since last sample        */
-    uint64_t              complete;        /* total completed on this thread    */
-    uint64_t              bytes;
+    uint64_t              complete;        /* completed inside measurement window */
+    uint64_t              bytes;           /* bytes inside measurement window   */
+    uint64_t              ramp_complete;   /* completed during connection ramp-up */
+    uint64_t              ramp_bytes;      /* bytes during ramp-up              */
     errors                errors;
     struct hdr_histogram *latency_histogram;
     struct hdr_histogram *u_latency_histogram;
@@ -129,6 +130,15 @@ struct orchestrator {
     uint64_t                start_us;
     bool                    record_all_responses;
     uint64_t                timeout_ms;
+
+    /* Connection-ready barrier: counting terminally-resolved initial connects.
+     * total_connections is the number actually opened (per_thread * n_threads),
+     * which may be less than cfg.connections if not evenly divisible. */
+    uint64_t                total_connections;
+    volatile int            connections_established;
+    volatile uint64_t       connections_ready_at; /* 0 until all conns are up  */
+    volatile uint64_t       stop_at;              /* shifted after conns ready  */
+    uint64_t                workers_start_us;     /* when all workers entered aeMain */
 
     /* t049-fix: static request bytes generated once in the main thread before
      * workers start. All threads share the same read-only buffer.
@@ -191,6 +201,19 @@ static int  oc_reconnect(othread *t, oconn *c);
 static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask);
 static void socket_readable(aeEventLoop *loop, int fd, void *data, int mask);
 
+/* Called once per connection slot when its initial-connect attempt is
+ * terminally resolved (either success or permanent failure / abandon).
+ * When the last slot resolves, we record the ready timestamp so the main
+ * thread can shift stop_at and start the measurement window. */
+static void signal_connection_ready(othread *t) {
+    orchestrator *o = t->orch;
+    if (__sync_add_and_fetch(&o->connections_established, 1) != (int)o->total_connections)
+        return;
+    uint64_t zero = 0, now = time_us();
+    __atomic_compare_exchange_n((uint64_t *)&o->connections_ready_at, &zero, now,
+                                false, __ATOMIC_RELEASE, __ATOMIC_RELAXED);
+}
+
 static int delayed_initial_connect(aeEventLoop *loop, long long id, void *data) {
     (void)loop; (void)id;
     oconn    *c = data;
@@ -203,6 +226,7 @@ static int delayed_initial_connect(aeEventLoop *loop, long long id, void *data) 
         /* Success. If this connection previously failed, count the recovery. */
         if (c->initial_connect_error_counted)
             t->errors.connect_recovered++;
+        signal_connection_ready(t);
         return AE_NOMORE;
     }
 
@@ -220,6 +244,7 @@ static int delayed_initial_connect(aeEventLoop *loop, long long id, void *data) 
     if (e != ECONNREFUSED && e != ETIMEDOUT &&
         e != ENETUNREACH  && e != EHOSTUNREACH && e != ECONNRESET) {
         t->errors.connect_abandoned++;
+        signal_connection_ready(t);
         return AE_NOMORE;
     }
 
@@ -321,11 +346,25 @@ static bool record_response(othread *t, oconn *c) {
     orchestrator *o = t->orch;
     uint64_t now = time_us();
 
-    t->complete++;
-    t->requests++;
-    /* Accumulate the response wire size the protocol surfaced via the
-     * connection byte-channel (t042), for Transfer/sec reporting. */
-    t->bytes += c->conn.bytes;
+    /* Gate all measurement to the window [connections_ready_at, stop_at).
+     * The rate-controller state (rc->complete, in_flight) must update
+     * unconditionally so pacing stays correct outside the window. */
+    bool measuring = (__atomic_load_n((uint64_t *)&o->connections_ready_at,
+                                      __ATOMIC_RELAXED) != 0)
+                     && !o->stop
+                     && (now < __atomic_load_n((uint64_t *)&o->stop_at,
+                                               __ATOMIC_RELAXED));
+    if (measuring) {
+        t->complete++;
+        t->requests++;
+        t->bytes += c->conn.bytes;
+    } else if (__atomic_load_n((uint64_t *)&o->connections_ready_at,
+                               __ATOMIC_RELAXED) == 0) {
+        /* Before connections_ready_at: ramp-up phase. Count separately for
+         * transparency in the "Total" output line. */
+        t->ramp_complete++;
+        t->ramp_bytes += c->conn.bytes;
+    }
 
     int64_t uncorrected = 0;
     int64_t expected = rate_expected_latency(&c->rate, now, &uncorrected);
@@ -338,14 +377,16 @@ static bool record_response(othread *t, oconn *c) {
      * retained for parity with the -B batch-latency option once pipelining is
      * reintroduced at the protocol layer. */
     (void)o->record_all_responses;
-    hdr_record_value(t->latency_histogram, expected);
-    hdr_record_value(t->u_latency_histogram, uncorrected);
+    if (measuring) {
+        hdr_record_value(t->latency_histogram, expected);
+        hdr_record_value(t->u_latency_histogram, uncorrected);
+    }
 
     /* Tell the Request Layer a response completed (status is protocol-defined;
      * the orchestrator does not interpret it). */
     tell_response(t, 0, 0, (uint64_t)expected);
 
-    if (now >= t->stop_at || o->stop) {
+    if (now >= o->stop_at || o->stop) {
         aeStop(t->loop);
         return false;
     }
@@ -430,8 +471,10 @@ static int calibrate(aeEventLoop *loop, long long id, void *data) {
     if (!rate_calibrate(t->latency_histogram, &mean, &interval))
         return CALIBRATE_DELAY_MS; /* not enough data yet, retry */
 
-    hdr_reset(t->latency_histogram);
-    hdr_reset(t->u_latency_histogram);
+    /* Do NOT reset the histograms. Counting is already gated on
+     * connections_ready_at, so there are no ramp-up samples to discard.
+     * Resetting here would drop valid post-ready measurements and create an
+     * inconsistency between the histogram window and the Req/Sec window. */
 
     t->interval     = interval;
     t->sample_start = time_us();
@@ -459,7 +502,7 @@ static int check_timeouts(aeEventLoop *loop, long long id, void *data) {
             t->errors.timeout++;
     }
 
-    if (o->stop || now >= t->stop_at) {
+    if (o->stop || now >= o->stop_at) {
         aeStop(loop);
     }
     return TIMEOUT_INTERVAL_MS;
@@ -593,7 +636,6 @@ static void print_hdr_latency(struct hdr_histogram *h, const char *desc,
 
 typedef struct {
     orchestrator *o;
-    uint64_t      stop_at;
     volatile int  done;
 } oprg_arg;
 
@@ -642,7 +684,8 @@ static void *progress_main(void *raw) {
 
     /* Phase 3 — run bar */
     uint64_t bar_start = time_us();
-    uint64_t total_us  = arg->stop_at > bar_start ? arg->stop_at - bar_start : 1;
+    uint64_t stop_at_snap = __atomic_load_n((uint64_t *)&arg->o->stop_at, __ATOMIC_ACQUIRE);
+    uint64_t total_us  = stop_at_snap > bar_start ? stop_at_snap - bar_start : 1;
 
     while (!arg->done) {
         uint64_t now     = time_us();
@@ -716,6 +759,7 @@ orchestrator *orchestrator_create(orchestrator_cfg cfg,
 
     uint64_t per_thread_conns = cfg.connections / cfg.threads;
     if (per_thread_conns == 0) per_thread_conns = 1;
+    o->total_connections = per_thread_conns * cfg.threads;
     double throughput_per_thread = (double)cfg.rate / cfg.threads;
 
     uint32_t caps = (api && api->capabilities && engine)
@@ -754,7 +798,7 @@ int orchestrator_run(orchestrator *o) {
 
     uint64_t duration_us = o->cfg.duration_us;
     o->start_us = time_us();
-    uint64_t stop_at = o->start_us + duration_us;
+    o->stop_at  = o->start_us + duration_us; /* initial; shifted after conns ready */
 
     /* Install the signal-driven drain (SIGINT -> graceful stop). */
     g_active = o;
@@ -807,36 +851,39 @@ int orchestrator_run(orchestrator *o) {
     }
 #undef FD_OVERHEAD
 
-    oprg_arg parg = { o, stop_at, 0 };
+    oprg_arg parg = { o, 0 };
     pthread_t progress_thread;
     pthread_create(&progress_thread, NULL, progress_main, &parg);
 
     for (uint64_t i = 0; i < o->n_threads; i++) {
         othread *t = &o->threads[i];
-        t->stop_at = stop_at;
         t->loop = aeCreateEventLoop(10 + (int)(o->cfg.connections * 3));
         if (!t->loop) return -2;
         if (pthread_create(&t->thread, NULL, thread_main, t) != 0)
             return -3;
     }
 
-    /* ADR 0003 Decision A: the reported elapsed window must EXCLUDE the
-     * thread/event-loop creation above. `o->start_us` stays the stop_at anchor
-     * (the test still stops at a fixed wall-clock duration); `run_start` is the
-     * runtime clock captured *after* the create loop — matching phase-0
-     * wrk.c's `start = time_us()`. Reporting elapsed from o->start_us instead
-     * would charge setup time to the test window and under-report Requests/sec.
+    /* Wait until every worker has entered its event loop (workers_ready barrier,
+     * t044), then additionally wait until every initial connection has been
+     * terminally resolved — either successfully connected or permanently abandoned.
+     * The stagger (5 ms × connections_per_thread) causes a ramp-up window where
+     * actual throughput is below -R; by starting the measurement clock here we
+     * give the full -d duration of steady-state load and eliminate the ramp-up
+     * deficit from the reported Requests/sec.
      *
-     * t044: additionally block until every worker has finished setup and entered
-     * its event loop (workers_ready == n_threads). pthread_create returning does
-     * NOT mean the thread is running; capturing run_start right after the create
-     * loop starts the measured window before load is actually flowing, which
-     * lengthens runtime_us and under-reports Requests/sec. Phase-0 gets this for
-     * free (its create loop does per-thread script_create, so the workers have
-     * spun up by the time it reads `start`). Bounded by thread spin-up (~ms). */
+     * After the barrier we shift o->stop_at forward by the ramp-up time so
+     * threads continue running for the full requested duration, then snapshot
+     * each thread's cumulative counts so we can subtract the pre-ready portion
+     * at aggregation time. */
     while (__sync_fetch_and_add(&o->workers_ready, 0) < (int)o->n_threads)
         sched_yield();
-    uint64_t run_start = time_us();
+    o->workers_start_us = time_us();  /* ramp-up begins here */
+
+    while (__atomic_load_n((uint64_t *)&o->connections_ready_at, __ATOMIC_ACQUIRE) == 0)
+        sched_yield();
+
+    uint64_t run_start = o->connections_ready_at;
+    __atomic_store_n((uint64_t *)&o->stop_at, run_start + duration_us, __ATOMIC_RELEASE);
 
     for (uint64_t i = 0; i < o->n_threads; i++)
         pthread_join(o->threads[i].thread, NULL);
@@ -847,18 +894,28 @@ int orchestrator_run(orchestrator *o) {
      * I/O); joining it first would charge that wakeup lag + erase to runtime_us
      * (~0.3% over 20s), under-reporting Requests/sec. Pre-progress-bar phase-0
      * (and the t040 baseline) read runtime immediately after the worker join. */
+    /* Cap at duration_us: the defined window is [connections_ready_at, stop_at].
+     * Threads overshoot stop_at by up to one response latency (the check fires
+     * at completion, not mid-flight), so the raw wall-clock gap is slightly
+     * larger. Using duration_us keeps the denominator exact. */
     uint64_t elapsed = time_us() - run_start;
+    if (elapsed > duration_us) elapsed = duration_us;
 
     parg.done = 1;
     pthread_join(progress_thread, NULL);
 
-    /* Aggregate per-thread stats into the handle. */
+    /* Aggregate per-thread stats. Measurement counters (complete, bytes) are
+     * gated on the [connections_ready_at, stop_at) window inside record_response.
+     * Ramp-up counters collect the excluded pre-ready completions separately. */
     uint64_t complete = 0, bytes = 0;
+    uint64_t ramp_complete = 0, ramp_bytes = 0;
     errors agg = {0};
     for (uint64_t i = 0; i < o->n_threads; i++) {
         othread *t = &o->threads[i];
-        complete += t->complete;
-        bytes    += t->bytes;
+        complete      += t->complete;
+        bytes         += t->bytes;
+        ramp_complete += t->ramp_complete;
+        ramp_bytes    += t->ramp_bytes;
         agg.connect            += t->errors.connect;
         agg.connect_recovered  += t->errors.connect_recovered;
         agg.connect_abandoned  += t->errors.connect_abandoned;
@@ -909,12 +966,31 @@ int orchestrator_run(orchestrator *o) {
 
             long double runtime_s = elapsed / 1000000.0;
             long double req_per_s = runtime_s > 0 ? complete / runtime_s : 0;
-            char *runtime_msg = format_time_us((long double)elapsed);
-            char *read_msg = format_binary((long double)bytes);
-            printf("  %" PRIu64 " requests in %s, %sB read\n",
-                   complete, runtime_msg, read_msg);
-            free(runtime_msg);
-            free(read_msg);
+
+            /* Two-line summary: measurement window (basis for RPS/Transfer)
+             * followed by full-test totals including ramp-up, so both the
+             * calculation inputs and the excluded data are visible. */
+            uint64_t ramp_us    = run_start > o->workers_start_us
+                                  ? run_start - o->workers_start_us : 0;
+            uint64_t total_reqs = complete + ramp_complete;
+            uint64_t total_us   = elapsed  + ramp_us;
+
+            char *window_time = format_time_us((long double)elapsed);
+            char *window_read = format_binary((long double)bytes);
+            printf("  Measurement: %" PRIu64 " requests in %s, %sB read\n",
+                   complete, window_time, window_read);
+            free(window_time);
+            free(window_read);
+
+            char *total_time = format_time_us((long double)total_us);
+            char *total_read = format_binary((long double)(bytes + ramp_bytes));
+            char *ramp_time  = format_time_us((long double)ramp_us);
+            printf("  Total:       %" PRIu64 " requests in %s, %sB read"
+                   " (+ %s ramp-up, %" PRIu64 " req excluded)\n",
+                   total_reqs, total_time, total_read, ramp_time, ramp_complete);
+            free(total_time);
+            free(total_read);
+            free(ramp_time);
 
             if (agg.connect || agg.read || agg.write || agg.timeout) {
                 printf("  Socket errors: connect %u, read %u, write %u, "
