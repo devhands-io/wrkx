@@ -1,5 +1,6 @@
 EXT_SRCS     += extensions/memcached/mc_codec.c \
                 extensions/memcached/mc_request.c \
+                extensions/memcached/mc_lua_helpers.c \
                 extensions/memcached/memcached.c \
                 extensions/memcached/init.c
 EXT_INIT_FNS += wrkx_extension_init_memcached

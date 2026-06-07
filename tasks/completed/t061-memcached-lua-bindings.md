@@ -1,5 +1,5 @@
 title: memcached Lua bindings — script helpers for text commands
-status: todo
+status: completed
 adr: 0005
 adr-step: P4-1
 depends: t060

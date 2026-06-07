@@ -66,13 +66,14 @@ void test_memcached_init_registers_protocol(void) {
     TEST_ASSERT_NOT_NULL(registered_protocol->close);
 }
 
-void test_memcached_init_registers_no_helpers_yet(void) {
+void test_memcached_init_registers_helpers(void) {
     wrkx_extension_api api = make_api();
 
     wrkx_extension_init_memcached(&api);
 
-    TEST_ASSERT_NULL(registered_ns);
-    TEST_ASSERT_EQUAL_UINT(0, registered_helper_count);
+    TEST_ASSERT_NOT_NULL(registered_ns);
+    TEST_ASSERT_EQUAL_STRING("memcached", registered_ns);
+    TEST_ASSERT_EQUAL_UINT(5, registered_helper_count); /* get set delete incr decr */
 }
 
 void test_memcached_init_rejects_wrong_version(void) {
@@ -92,7 +93,7 @@ void test_memcached_init_accepts_null_api(void) {
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_memcached_init_registers_protocol);
-    RUN_TEST(test_memcached_init_registers_no_helpers_yet);
+    RUN_TEST(test_memcached_init_registers_helpers);
     RUN_TEST(test_memcached_init_rejects_wrong_version);
     RUN_TEST(test_memcached_init_accepts_null_api);
     return UNITY_END();
