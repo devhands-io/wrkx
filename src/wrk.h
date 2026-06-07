@@ -17,7 +17,7 @@
 #include "http_parser.h"
 #include "hdr_histogram.h"
 
-#define VERSION  "0.1.3"
+#define VERSION  "0.1.4"
 #define RECVBUF  8192
 #define SAMPLES  100000000
 
