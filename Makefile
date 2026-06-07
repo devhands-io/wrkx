@@ -27,6 +27,22 @@ TARGET  := $(shell uname -s | tr '[A-Z]' '[a-z]' 2>/dev/null || echo unknown)
 -include config.mk
 
 # ---------------------------------------------------------------------------
+# QuickJS vendored engine (opt-in: ./configure --with-quickjs && make)
+# ---------------------------------------------------------------------------
+ifeq ($(QUICKJS_ENABLED),1)
+QJS_DIR    := deps/quickjs
+QJS_SRCS   := $(wildcard $(QJS_DIR)/*.c)
+QJS_OBJS   := $(patsubst %.c,%.o,$(QJS_SRCS))
+QJS_CFLAGS := -I$(QJS_DIR) -DCONFIG_VERSION='"wrkx-vendored"'
+# QuickJS uses -Wno-* suppressions; compile its objects with relaxed warnings
+# so the wrkx sources stay under full -Wall -Werror.
+$(QJS_OBJS): CFLAGS += $(QJS_CFLAGS) -Wno-unused-parameter -Wno-sign-compare \
+                       -Wno-unused-but-set-variable
+CFLAGS     += -I$(QJS_DIR) -DWRKX_HAVE_QUICKJS=1
+LAYER_SRC  += src/scripting/quickjs/engine.c
+endif
+
+# ---------------------------------------------------------------------------
 # Layer source lists (ADR 0001 three-layer architecture, P1-5 wiring).
 # The main wrkx binary is built from these; the old wrk.c / script.c remain
 # available only for the legacy unit-test builds (SCRIPT_DEPS below).
@@ -57,6 +73,7 @@ clean:
 	@rm -rf obj/cov
 	$(RM) $(BIN) obj/*
 	@$(MAKE) -C deps/luajit clean
+	@rm -f deps/quickjs/*.o
 
 $(ODIR):
 	@mkdir -p $@
@@ -69,16 +86,22 @@ $(ODIR)/bytecode.o: src/wrk.lua $(LDIR)/libluajit.a | $(ODIR)
 # the unit-test build pattern and avoids obj/proto/, obj/scripting/ dirs).
 # Extension sources ($(EXT_SRCS)) and the generated dispatch shim
 # ($(GEN_REG_C)) are appended when EXTENSIONS is non-empty.
-$(BIN): $(LAYER_SRC) $(COMMON_SRC) $(EXT_SRCS) $(ODIR)/bytecode.o $(LDIR)/libluajit.a | $(ODIR)
+$(BIN): $(LAYER_SRC) $(COMMON_SRC) $(EXT_SRCS) $(QJS_OBJS) $(ODIR)/bytecode.o $(LDIR)/libluajit.a | $(ODIR)
 	@echo CC+LINK $(BIN)
 	@sh scripts/gen_register_extensions.sh $(EXT_INIT_FNS) > $(GEN_REG_C)
 	@$(CC) $(CFLAGS) $(EXT_CFLAGS) -Isrc -I$(LDIR) $(LDFLAGS) \
-		-o $@ $(LAYER_SRC) $(COMMON_SRC) $(EXT_SRCS) $(GEN_REG_C) $(ODIR)/bytecode.o $(LIBS)
+		-o $@ $(LAYER_SRC) $(COMMON_SRC) $(EXT_SRCS) $(GEN_REG_C) $(QJS_OBJS) $(ODIR)/bytecode.o $(LIBS)
 
 # Keep the pattern rule available for any remaining .o targets (bytecode.o).
 $(ODIR)/%.o : src/%.c
 	@echo CC $<
 	@$(CC) $(CFLAGS) -Isrc -c -o $@ $<
+
+# QuickJS vendored objects (compiled in-place under deps/quickjs/).
+deps/quickjs/%.o : deps/quickjs/%.c
+	@echo CC $<
+	@$(CC) $(CFLAGS) $(QJS_CFLAGS) -Wno-unused-parameter -Wno-sign-compare \
+		-Wno-unused-but-set-variable -c -o $@ $<
 
 $(LDIR)/libluajit.a:
 	@echo Building LuaJIT...

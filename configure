@@ -12,12 +12,14 @@ TARGET=$(uname -s | tr '[:upper:]' '[:lower:]' 2>/dev/null || echo unknown)
 info "detected platform: $TARGET"
 
 # -- Parse optional args -------------------------------------------------------
+QUICKJS_ENABLED=0
 for arg in "$@"; do
   case "$arg" in
     --with-openssl=*) OPENSSL_PREFIX="${arg#*=}" ;;
     --prefix=*)       PREFIX="${arg#*=}" ;;
+    --with-quickjs)   QUICKJS_ENABLED=1 ;;
     --help)
-      echo "Usage: ./configure [--with-openssl=PATH] [--prefix=PATH]"
+      echo "Usage: ./configure [--with-openssl=PATH] [--prefix=PATH] [--with-quickjs]"
       exit 0 ;;
     *) die "unknown option: $arg" ;;
   esac
@@ -110,6 +112,15 @@ EOF
     die "unsupported platform: $TARGET"
     ;;
 esac
+
+# -- QuickJS opt-in -----------------------------------------------------------
+cat >> "$CONFIG_MK" <<EOF
+
+QUICKJS_ENABLED := $QUICKJS_ENABLED
+EOF
+if [ "$QUICKJS_ENABLED" = "1" ]; then
+  info "QuickJS enabled (deps/quickjs)"
+fi
 
 info "wrote $CONFIG_MK"
 echo ""

@@ -1,5 +1,5 @@
 title: QuickJS — vendor pinned source and build system integration
-status: pending
+status: completed
 adr: 0005
 adr-step: P5-2
 depends: t070
