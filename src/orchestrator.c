@@ -192,23 +192,37 @@ static void socket_readable(aeEventLoop *loop, int fd, void *data, int mask);
 
 static int delayed_initial_connect(aeEventLoop *loop, long long id, void *data) {
     (void)loop; (void)id;
-    oconn *c = data;
+    oconn    *c = data;
+    othread  *t = c->thread;
+
     if (!c->initial_connect_error_counted)
         c->rate.thread_start = time_us(); /* set once: preserves pacing/latency baseline */
-    if (oc_connect(c->thread, c) == -1) {
-        int e = errno;
-        /* Undo the duplicate increment before branching so errors.connect always equals
-         * the number of unique connections that failed initial connect, not attempt count. */
+
+    if (oc_connect(t, c) != -1) {
+        /* Success. If this connection previously failed, count the recovery. */
         if (c->initial_connect_error_counted)
-            c->thread->errors.connect--;
-        /* Retry selected TCP-level failures; resource/ae failures (EMFILE, ENOMEM) stop here. */
-        if (e != ECONNREFUSED && e != ETIMEDOUT &&
-            e != ENETUNREACH  && e != EHOSTUNREACH && e != ECONNRESET)
-            return AE_NOMORE;
-        c->initial_connect_error_counted = true;
-        return INITIAL_CONNECT_RETRY_MS;
+            t->errors.connect_recovered++;
+        return AE_NOMORE;
     }
-    return AE_NOMORE;
+
+    int e = errno;
+
+    if (!c->initial_connect_error_counted) {
+        /* First failure: errors.connect already charged by oc_connect. */
+        c->initial_connect_error_counted = true;
+    } else {
+        /* Retry failure: undo the duplicate increment from oc_connect. */
+        t->errors.connect--;
+    }
+
+    /* Retry selected TCP-level rejections; resource/ae failures are permanent. */
+    if (e != ECONNREFUSED && e != ETIMEDOUT &&
+        e != ENETUNREACH  && e != EHOSTUNREACH && e != ECONNRESET) {
+        t->errors.connect_abandoned++;
+        return AE_NOMORE;
+    }
+
+    return INITIAL_CONNECT_RETRY_MS;
 }
 
 static int oc_connect(othread *t, oconn *c) {
@@ -821,11 +835,13 @@ int orchestrator_run(orchestrator *o) {
         othread *t = &o->threads[i];
         complete += t->complete;
         bytes    += t->bytes;
-        agg.connect += t->errors.connect;
-        agg.read    += t->errors.read;
-        agg.write   += t->errors.write;
-        agg.timeout += t->errors.timeout;
-        agg.status  += t->errors.status;
+        agg.connect            += t->errors.connect;
+        agg.connect_recovered  += t->errors.connect_recovered;
+        agg.connect_abandoned  += t->errors.connect_abandoned;
+        agg.read               += t->errors.read;
+        agg.write              += t->errors.write;
+        agg.timeout            += t->errors.timeout;
+        agg.status             += t->errors.status;
         if (t->latency_histogram)
             hdr_add(o->latency_histogram, t->latency_histogram);
         if (t->u_latency_histogram)
@@ -880,6 +896,12 @@ int orchestrator_run(orchestrator *o) {
                 printf("  Socket errors: connect %u, read %u, write %u, "
                        "timeout %u\n",
                        agg.connect, agg.read, agg.write, agg.timeout);
+                if (agg.connect)
+                    printf("    Connect: %u recovered, %u abandoned"
+                           " (%u retrying at end)\n",
+                           agg.connect_recovered, agg.connect_abandoned,
+                           agg.connect - agg.connect_recovered
+                                       - agg.connect_abandoned);
             }
             if (agg.status)
                 printf("  Non-2xx or 3xx responses: %u\n", agg.status);

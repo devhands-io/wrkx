@@ -10,7 +10,9 @@
 #define MIN(X, Y) ((X) < (Y) ? (X) : (Y))
 
 typedef struct {
-    uint32_t connect;
+    uint32_t connect;           /* unique connections that failed initial connect   */
+    uint32_t connect_recovered; /* of those, connections that retried and connected */
+    uint32_t connect_abandoned; /* of those, permanently idle (non-retryable error) */
     uint32_t read;
     uint32_t write;
     uint32_t status;
