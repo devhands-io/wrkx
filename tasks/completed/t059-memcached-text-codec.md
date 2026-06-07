@@ -1,5 +1,5 @@
 title: memcached text codec — encode commands and parse replies
-status: todo
+status: completed
 adr: 0005
 adr-step: P4-1
 depends: t058
