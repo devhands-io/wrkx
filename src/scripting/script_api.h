@@ -29,6 +29,14 @@ struct orchestrator_stats;
 typedef struct script_engine script_engine;
 typedef struct session       session;
 
+/* Capability bits an engine reports for the currently loaded script
+ * (ADR 0005, Phase 5, t069). Language-neutral: the orchestrator consults these
+ * to decide static-vs-dynamic without knowing anything about Lua or JS. */
+typedef enum {
+    SCRIPT_CAP_DYNAMIC_REQUEST = 1u << 0, /* call request() for every request   */
+    SCRIPT_CAP_RESPONSE_HOOK   = 1u << 1, /* deliver response() callbacks        */
+} script_cap;
+
 typedef struct script_api {
     const char *name;
 
@@ -40,6 +48,17 @@ typedef struct script_api {
      * Returns 0 on success.  May be NULL in the vtable; caller checks first. */
     int (*configure)(script_engine *, const char *url,
                      const char * const *headers, size_t n_headers);
+
+    /* Report capability bits (script_cap) for the loaded script. NULL ⇒ treat
+     * as 0 (fully static: pre-generate one request, no response callbacks).
+     * Called after configure() and helper registration, before init(). */
+    uint32_t (*capabilities)(script_engine *);
+
+    /* Register a namespace of protocol helpers into THIS engine instance.
+     * Each engine carries its own implementation (replaces the former global
+     * script_register_helpers). NULL ⇒ engine has no helper support. */
+    void (*register_helpers)(script_engine *, const char *ns,
+                             const script_helper *helpers, size_t count);
 
     /* Called once per thread before any requests. */
     void (*init)(script_engine *, uint64_t thread_id, uint64_t connections);
@@ -58,15 +77,10 @@ typedef struct script_api {
     void (*destroy)(script_engine *);
 } script_api;
 
-/*
- * Registers a namespace of helpers into the scripting engine. Called by each
- * scripting/<engine>/<proto>_helpers.c during engine init. NOT called by
- * protocol implementations (proto layer) — they have no scripting knowledge.
- */
-void script_register_helpers(script_engine       *,
-                             const char          *ns,
-                             const script_helper *helpers,
-                             size_t               count);
+/* Helper registration is now a per-engine vtable slot (script_api.register_helpers)
+ * so multiple engines can coexist in one binary. Each engine exposes its own
+ * engine-internal registration entry point for glue modules — for LuaJIT that is
+ * lua_register_helpers() in scripting/lua/engine.h. */
 
 /* Session: per-connection key-value store accessible from scripts. */
 session    *session_create(void);

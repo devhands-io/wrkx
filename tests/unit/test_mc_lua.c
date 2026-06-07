@@ -43,8 +43,8 @@ void setUp(void) {
 
     api->init(engine, 0, 1);
 
-    script_register_helpers(engine, "memcached",
-                            mc_lua_helpers, mc_lua_helpers_count);
+    lua_register_helpers(engine, "memcached",
+                         mc_lua_helpers, mc_lua_helpers_count);
 
     L = (lua_State *)lua_engine_state(engine);
     TEST_ASSERT_NOT_NULL(L);

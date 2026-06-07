@@ -22,7 +22,9 @@ void wrkx_extension_init_memcached(const wrkx_extension_api *api) {
     if (!api || api->version != WRKX_EXTENSION_API_VERSION) return;
 
     api->register_protocol(memcached_protocol());
-    api->register_helpers("memcached", mc_lua_helpers, mc_lua_helpers_count);
+    /* @lua tag: Lua-shaped helper bodies (engine_ctx == lua_State *); bound only
+     * to the LuaJIT engine by the host selector (ADR 0005, Phase 5, t069). */
+    api->register_helpers("memcached@lua", mc_lua_helpers, mc_lua_helpers_count);
     api->register_schema("memcached", NULL, "11211", mc_configure_cb);
 }
 

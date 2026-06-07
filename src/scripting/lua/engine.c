@@ -87,7 +87,7 @@ static lua_State *engine_new_state(const char *file) {
 }
 
 /* -------------------------------------------------------------------------
- * Helper registration (script_register_helpers, frozen contract)
+ * Helper registration (lua_register_helpers — engine-internal, vtable-bound)
  * ---------------------------------------------------------------------- */
 
 /*
@@ -101,10 +101,10 @@ static int lua_helper_trampoline(lua_State *L) {
     return fn((void *) L);
 }
 
-void script_register_helpers(script_engine       *engine,
-                             const char          *ns,
-                             const script_helper *helpers,
-                             size_t               count) {
+void lua_register_helpers(script_engine       *engine,
+                          const char          *ns,
+                          const script_helper *helpers,
+                          size_t               count) {
     if (engine == NULL || engine->L == NULL || ns == NULL) return;
     lua_State *L = engine->L;
 
@@ -228,6 +228,40 @@ static int lua_configure(script_engine *engine, const char *url,
     }
 
     return 0;
+}
+
+/* -------------------------------------------------------------------------
+ * Capability detection (ADR 0005, Phase 5, t069)
+ * ---------------------------------------------------------------------- */
+
+/*
+ * Lua-specific realization of the language-neutral capability contract.
+ *
+ * wrk.lua installs the *static* default request as a closure on `wrk.request`
+ * during wrk.init() — never as a global `request`. A script that wants a fresh
+ * request per call defines a global `request` function, and lua_request()
+ * prefers that global over wrk.request. So "a global `request` function exists"
+ * is the precise signal that this workload is dynamic; likewise a global
+ * `response` function means the script wants per-response callbacks.
+ *
+ * Globals are populated when create() executes the script file, so this may be
+ * called any time after create() (no init() required). A NULL script defines
+ * neither global and reports 0 (pure static default GET).
+ */
+static uint32_t lua_capabilities(script_engine *engine) {
+    if (engine == NULL || engine->L == NULL) return 0;
+    lua_State *L = engine->L;
+    uint32_t caps = 0;
+
+    lua_getglobal(L, "request");
+    if (lua_isfunction(L, -1)) caps |= SCRIPT_CAP_DYNAMIC_REQUEST;
+    lua_pop(L, 1);
+
+    lua_getglobal(L, "response");
+    if (lua_isfunction(L, -1)) caps |= SCRIPT_CAP_RESPONSE_HOOK;
+    lua_pop(L, 1);
+
+    return caps;
 }
 
 static void lua_init(script_engine *engine, uint64_t thread_id,
@@ -371,14 +405,16 @@ static void lua_destroy(script_engine *engine) {
 }
 
 static script_api lua_api = {
-    .name      = "lua",
-    .create    = lua_create,
-    .configure = lua_configure,   /* ADR 0002 Decision 3 */
-    .init      = lua_init,
-    .request   = lua_request,
-    .response  = lua_response,
-    .done      = lua_done,
-    .destroy   = lua_destroy,
+    .name             = "lua",
+    .create           = lua_create,
+    .configure        = lua_configure,   /* ADR 0002 Decision 3 */
+    .capabilities     = lua_capabilities,/* ADR 0005 Phase 5 t069 */
+    .register_helpers = lua_register_helpers,
+    .init             = lua_init,
+    .request          = lua_request,
+    .response         = lua_response,
+    .done             = lua_done,
+    .destroy          = lua_destroy,
 };
 
 script_api *lua_script_api(void) {

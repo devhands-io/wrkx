@@ -36,6 +36,8 @@ void wrkx_extension_init_redis(const wrkx_extension_api *api) {
     if (!api || api->version != WRKX_EXTENSION_API_VERSION) return;
 
     api->register_protocol(redis_protocol());
-    api->register_helpers("redis", redis_lua_helpers, redis_lua_helpers_count);
+    /* @lua tag: these helper bodies cast engine_ctx to lua_State * (Lua-shaped),
+     * so the host binds them only to the LuaJIT engine (ADR 0005, Phase 5, t069). */
+    api->register_helpers("redis@lua", redis_lua_helpers, redis_lua_helpers_count);
     api->register_schema("redis", "rediss", "6379", redis_configure_cb);
 }

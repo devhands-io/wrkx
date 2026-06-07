@@ -29,4 +29,16 @@ script_api *lua_script_api(void);
  */
 void *lua_engine_state(script_engine *engine);
 
+/*
+ * Engine-internal helper registration (ADR 0005, Phase 5, t069). Replaces the
+ * former global script_register_helpers(): binds a namespace of script_helper
+ * closures into THIS Lua engine. Called by Lua glue modules and wired into the
+ * vtable as script_api.register_helpers. Not for cross-engine code — the host
+ * reaches it only through the vtable.
+ */
+void lua_register_helpers(script_engine       *engine,
+                          const char          *ns,
+                          const script_helper *helpers,
+                          size_t               count);
+
 #endif /* SCRIPTING_LUA_ENGINE_H */

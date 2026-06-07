@@ -31,6 +31,7 @@
 #include "proto/http1.h"
 #include "scripting/lua/engine.h"
 #include "scripting/script_api.h"
+#include "scripting/helper_tag.h"
 #include "units.h"
 #include "http_parser.h"
 #include "wrkx_extension.h"
@@ -290,11 +291,19 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* Apply all helper namespaces registered by active extensions. */
+    /* Apply helper namespaces registered by active extensions, selecting by
+     * engine tag (ADR 0005, Phase 5, t069). A namespace "ns@engine" binds only
+     * to the matching engine; the "@engine" suffix is stripped first so the
+     * script always sees the bare namespace. The tag rides inside the ns string,
+     * so include/wrkx_extension.h is untouched. */
     for (int i = 0; i < g_helper_set_count; i++) {
-        script_register_helpers(eng, g_helper_sets[i].ns,
-                                g_helper_sets[i].helpers,
-                                g_helper_sets[i].count);
+        char bare[64];
+        if (!helper_ns_select(g_helper_sets[i].ns, api->name, bare, sizeof bare))
+            continue;
+        if (api->register_helpers)
+            api->register_helpers(eng, bare,
+                                  g_helper_sets[i].helpers,
+                                  g_helper_sets[i].count);
     }
 
     if (api->configure) {

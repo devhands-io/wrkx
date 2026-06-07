@@ -28,6 +28,7 @@
 
 #include "scripting/script_api.h"
 #include "scripting/lua/engine.h"
+#include "scripting/helper_tag.h"
 #include "orchestrator.h"
 
 void setUp(void) {}
@@ -246,6 +247,94 @@ void test_http_helper_registered_during_init(void) {
 }
 
 /* -------------------------------------------------------------------------
+ * capability detection (ADR 0005, Phase 5, t069)
+ * ---------------------------------------------------------------------- */
+
+void test_capabilities_null_script_is_static(void) {
+    script_api *api = lua_script_api();
+    TEST_ASSERT_NOT_NULL(api->capabilities);
+
+    script_engine *e = api->create(NULL);
+    TEST_ASSERT_EQUAL_UINT32(0, api->capabilities(e));
+    api->destroy(e);
+}
+
+void test_capabilities_static_request_is_static(void) {
+    /* A script with no global request/response is a static default workload. */
+    const char *path = write_script("local x = 1\n");
+    script_api *api = lua_script_api();
+    script_engine *e = api->create(path);
+    TEST_ASSERT_EQUAL_UINT32(0, api->capabilities(e));
+    api->destroy(e);
+}
+
+void test_capabilities_custom_request_is_dynamic(void) {
+    const char *path =
+        write_script("function request() return wrk.format('GET','/'..1) end\n");
+    script_api *api = lua_script_api();
+    script_engine *e = api->create(path);
+
+    uint32_t caps = api->capabilities(e);
+    TEST_ASSERT_TRUE(caps & SCRIPT_CAP_DYNAMIC_REQUEST);
+    TEST_ASSERT_FALSE(caps & SCRIPT_CAP_RESPONSE_HOOK);
+    api->destroy(e);
+}
+
+void test_capabilities_response_hook_detected(void) {
+    const char *path =
+        write_script("function response(status, headers, body) end\n");
+    script_api *api = lua_script_api();
+    script_engine *e = api->create(path);
+
+    uint32_t caps = api->capabilities(e);
+    TEST_ASSERT_TRUE(caps & SCRIPT_CAP_RESPONSE_HOOK);
+    TEST_ASSERT_FALSE(caps & SCRIPT_CAP_DYNAMIC_REQUEST);
+    api->destroy(e);
+}
+
+/* -------------------------------------------------------------------------
+ * vtable helper registration + engine-tagged namespace selection (t069)
+ * ---------------------------------------------------------------------- */
+
+static int sample_helper(void *engine_ctx) {
+    lua_State *L = (lua_State *) engine_ctx;
+    lua_pushstring(L, "from_helper");
+    return 1;
+}
+
+void test_register_helpers_via_vtable(void) {
+    script_api *api = lua_script_api();
+    TEST_ASSERT_NOT_NULL(api->register_helpers);
+
+    script_engine *e = api->create(NULL);
+    const script_helper helpers[] = { { "ping", sample_helper } };
+    api->register_helpers(e, "foo", helpers, 1);
+
+    lua_State *L = (lua_State *) lua_engine_state(e);
+    TEST_ASSERT_EQUAL_INT(0, luaL_dostring(L, "r = foo.ping()"));
+    lua_getglobal(L, "r");
+    TEST_ASSERT_EQUAL_STRING("from_helper", lua_tostring(L, -1));
+    lua_pop(L, 1);
+
+    api->destroy(e);
+}
+
+void test_engine_tagged_namespace_selection(void) {
+    char bare[64];
+
+    /* untagged "a" → bound for every engine, unchanged */
+    TEST_ASSERT_TRUE(helper_ns_select("a", "lua", bare, sizeof bare));
+    TEST_ASSERT_EQUAL_STRING("a", bare);
+
+    /* "b@lua" with active engine "lua" → bound, suffix stripped */
+    TEST_ASSERT_TRUE(helper_ns_select("b@lua", "lua", bare, sizeof bare));
+    TEST_ASSERT_EQUAL_STRING("b", bare);
+
+    /* "c@quickjs" with active engine "lua" → skipped */
+    TEST_ASSERT_FALSE(helper_ns_select("c@quickjs", "lua", bare, sizeof bare));
+}
+
+/* -------------------------------------------------------------------------
  * session store
  * ---------------------------------------------------------------------- */
 
@@ -297,6 +386,14 @@ int main(void) {
     RUN_TEST(test_configure_null_url_is_noop);
 
     RUN_TEST(test_http_helper_registered_during_init);
+
+    RUN_TEST(test_capabilities_null_script_is_static);
+    RUN_TEST(test_capabilities_static_request_is_static);
+    RUN_TEST(test_capabilities_custom_request_is_dynamic);
+    RUN_TEST(test_capabilities_response_hook_detected);
+
+    RUN_TEST(test_register_helpers_via_vtable);
+    RUN_TEST(test_engine_tagged_namespace_selection);
 
     RUN_TEST(test_session_set_get);
     RUN_TEST(test_session_null_safe);

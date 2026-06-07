@@ -44,8 +44,8 @@ void setUp(void) {
     api->init(engine, 0, 1);
 
     /* Register Redis helpers after init (globals persist). */
-    script_register_helpers(engine, "redis",
-                            redis_lua_helpers, redis_lua_helpers_count);
+    lua_register_helpers(engine, "redis",
+                         redis_lua_helpers, redis_lua_helpers_count);
 
     L = (lua_State *) lua_engine_state(engine);
     TEST_ASSERT_NOT_NULL(L);
@@ -327,6 +327,43 @@ void test_command_bytes_usable_as_request(void) {
 }
 
 /* -------------------------------------------------------------------------
+ * extension @lua tagging audit (ADR 0005, Phase 5, t069)
+ *
+ * The Redis helper bodies cast engine_ctx to lua_State *, so the extension must
+ * register them under "redis@lua" — the host then binds them only to the LuaJIT
+ * engine and never into a foreign VM.
+ * ---------------------------------------------------------------------- */
+
+void wrkx_extension_init_redis(const wrkx_extension_api *ext_api);
+
+static const char *audit_ns;
+
+static void audit_register_protocol(const protocol *p) { (void)p; }
+static void audit_register_helpers(const char *ns, const script_helper *h,
+                                   size_t count) {
+    (void)h; (void)count;
+    audit_ns = ns;
+}
+static void audit_register_schema(const char *s, const char *st,
+                                  const char *dp, wrkx_configure_fn c) {
+    (void)s; (void)st; (void)dp; (void)c;
+}
+
+void test_redis_init_tags_helpers_lua(void) {
+    audit_ns = NULL;
+    wrkx_extension_api ext = {
+        .version           = WRKX_EXTENSION_API_VERSION,
+        .register_protocol = audit_register_protocol,
+        .register_helpers  = audit_register_helpers,
+        .register_schema   = audit_register_schema,
+    };
+    wrkx_extension_init_redis(&ext);
+
+    TEST_ASSERT_NOT_NULL(audit_ns);
+    TEST_ASSERT_EQUAL_STRING("redis@lua", audit_ns);
+}
+
+/* -------------------------------------------------------------------------
  * main
  * ---------------------------------------------------------------------- */
 
@@ -359,6 +396,9 @@ int main(void) {
 
     /* Integration */
     RUN_TEST(test_command_bytes_usable_as_request);
+
+    /* Extension @lua tagging audit */
+    RUN_TEST(test_redis_init_tags_helpers_lua);
 
     return UNITY_END();
 }

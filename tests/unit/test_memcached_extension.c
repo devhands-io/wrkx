@@ -72,7 +72,9 @@ void test_memcached_init_registers_helpers(void) {
     wrkx_extension_init_memcached(&api);
 
     TEST_ASSERT_NOT_NULL(registered_ns);
-    TEST_ASSERT_EQUAL_STRING("memcached", registered_ns);
+    /* @lua tag (ADR 0005 Phase 5 t069): these Lua-shaped helpers must register
+     * under "memcached@lua" so the host never binds them into a non-Lua engine. */
+    TEST_ASSERT_EQUAL_STRING("memcached@lua", registered_ns);
     TEST_ASSERT_EQUAL_UINT(5, registered_helper_count); /* get set delete incr decr */
 }
 

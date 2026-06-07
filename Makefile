@@ -164,7 +164,8 @@ TEST_REDIS_LUA_BIN := obj/test_redis_lua
 # glue + http1 protocol for the http.* namespace (always registered).
 LUA_REDIS_ENGINE_DEPS := $(LUA_ENGINE_DEPS) \
                          extensions/redis/redis_lua_helpers.c \
-                         extensions/redis/redis.c extensions/redis/resp.c
+                         extensions/redis/redis.c extensions/redis/resp.c \
+                         extensions/redis/init.c
 
 TEST_EXT_API_SRC := tests/unit/test_extension_api.c
 TEST_EXT_API_BIN := obj/test_extension_api

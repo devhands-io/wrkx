@@ -41,5 +41,5 @@ static const script_helper http1_helpers[] = {
 
 void lua_register_http1_helpers(script_engine *engine) {
     size_t count = (sizeof(http1_helpers) / sizeof(http1_helpers[0])) - 1;
-    script_register_helpers(engine, "http", http1_helpers, count);
+    lua_register_helpers(engine, "http", http1_helpers, count);
 }
