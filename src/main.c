@@ -59,6 +59,7 @@ typedef struct {
     const char        *schema_tls;
     const char        *default_port;
     wrkx_configure_fn  configure;
+    const protocol    *proto;
 } schema_reg;
 
 typedef struct {
@@ -86,7 +87,8 @@ static void ext_reg_schema(const char *schema, const char *schema_tls,
                            const char *default_port, wrkx_configure_fn configure) {
     if (g_schema_count < MAX_EXT_SCHEMAS)
         g_schemas[g_schema_count++] =
-            (schema_reg){schema, schema_tls, default_port, configure};
+            (schema_reg){schema, schema_tls, default_port, configure,
+                         g_registered_proto};
 }
 
 static const wrkx_extension_api g_ext_api = {
@@ -317,7 +319,7 @@ int main(int argc, char **argv) {
     args.cfg.u_latency         = args.u_latency;
 
     /* Use the registered extension protocol, or fall back to HTTP/1.1. */
-    protocol *proto = pd.use_ext ? (protocol *) g_registered_proto
+    protocol *proto = pd.use_ext ? (protocol *) g_schemas[pd.schema_idx].proto
                                  : http1_protocol();
     orchestrator *o = orchestrator_create(args.cfg, proto, api, eng);
     if (o == NULL) {

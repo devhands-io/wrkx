@@ -170,7 +170,12 @@ TEST_EXT_API_SRC := tests/unit/test_extension_api.c
 TEST_EXT_API_BIN := obj/test_extension_api
 EXT_TOY_SRC      := extensions/toy/toy.c
 
-test-unit: $(TEST_UNIT_BIN) $(TEST_STATS_BIN) $(TEST_UNITS_BIN) $(TEST_HDR_BIN) $(TEST_SCRIPT_BIN) $(TEST_HTTP1_BIN) $(TEST_REDIS_BIN) $(TEST_CLI_BIN) $(TEST_LUA_ENGINE_BIN) $(TEST_REDIS_LUA_BIN) $(TEST_EXT_API_BIN)
+TEST_MEMCACHED_EXT_SRC := tests/unit/test_memcached_extension.c
+TEST_MEMCACHED_EXT_BIN := obj/test_memcached_extension
+MEMCACHED_EXT_DEPS     := extensions/memcached/memcached.c \
+                          extensions/memcached/init.c
+
+test-unit: $(TEST_UNIT_BIN) $(TEST_STATS_BIN) $(TEST_UNITS_BIN) $(TEST_HDR_BIN) $(TEST_SCRIPT_BIN) $(TEST_HTTP1_BIN) $(TEST_REDIS_BIN) $(TEST_CLI_BIN) $(TEST_LUA_ENGINE_BIN) $(TEST_REDIS_LUA_BIN) $(TEST_EXT_API_BIN) $(TEST_MEMCACHED_EXT_BIN)
 	@./$(TEST_UNIT_BIN)
 	@./$(TEST_STATS_BIN)
 	@./$(TEST_UNITS_BIN)
@@ -182,6 +187,7 @@ test-unit: $(TEST_UNIT_BIN) $(TEST_STATS_BIN) $(TEST_UNITS_BIN) $(TEST_HDR_BIN) 
 	@./$(TEST_LUA_ENGINE_BIN)
 	@./$(TEST_REDIS_LUA_BIN)
 	@./$(TEST_EXT_API_BIN)
+	@./$(TEST_MEMCACHED_EXT_BIN)
 
 test-redis: $(TEST_REDIS_BIN)
 	@./$(TEST_REDIS_BIN)
@@ -204,11 +210,18 @@ test-redis-lua: $(TEST_REDIS_LUA_BIN)
 test-extension-api: $(TEST_EXT_API_BIN)
 	@./$(TEST_EXT_API_BIN)
 
+test-memcached-extension: $(TEST_MEMCACHED_EXT_BIN)
+	@./$(TEST_MEMCACHED_EXT_BIN)
+
 # Extension API test: only needs wrkx_extension.h and the toy extension source.
 # No scripting engine, no LuaJIT, no orchestrator.
 $(TEST_EXT_API_BIN): $(TEST_EXT_API_SRC) $(UNITY_SRC) $(EXT_TOY_SRC) | $(ODIR)
 	@$(CC) $(CFLAGS) $(UNITY_INC) -Iinclude \
 		-o $@ $(TEST_EXT_API_SRC) $(UNITY_SRC) $(EXT_TOY_SRC)
+
+$(TEST_MEMCACHED_EXT_BIN): $(TEST_MEMCACHED_EXT_SRC) $(UNITY_SRC) $(MEMCACHED_EXT_DEPS) | $(ODIR)
+	@$(CC) $(CFLAGS) $(UNITY_INC) -Iinclude -Iextensions/memcached \
+		-o $@ $(TEST_MEMCACHED_EXT_SRC) $(UNITY_SRC) $(MEMCACHED_EXT_DEPS)
 
 # ---------------------------------------------------------------------------
 # Extension header isolation check (Gate C prerequisite)
