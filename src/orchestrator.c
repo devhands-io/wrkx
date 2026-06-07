@@ -173,7 +173,7 @@ static void ask_request(othread *t, oconn *c) {
 static void tell_response(othread *t, int status, size_t bytes,
                           uint64_t latency_us) {
     const script_api *api = engine_api(t->orch);
-    if (api && api->response && t->engine)
+    if (t->dynamic && api && api->response && t->engine)
         api->response(t->engine, status, bytes, latency_us);
 }
 
