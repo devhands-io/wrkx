@@ -21,6 +21,12 @@ if [[ ! -x "$WRK" ]]; then
     exit 0
 fi
 
+probe=$("$WRK" -t1 -c1 -d1s -R1 "redis://localhost:9" 2>&1 || true)
+if echo "$probe" | grep -q 'no extension provides'; then
+    echo "SKIP: redis extension not built — rebuild with EXTENSIONS=redis" >&2
+    exit 0
+fi
+
 cleanup() {
     if [[ -n "${SERVER_PID:-}" ]]; then
         kill "$SERVER_PID" 2>/dev/null || true

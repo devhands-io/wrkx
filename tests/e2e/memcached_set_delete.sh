@@ -1,26 +1,26 @@
 #!/usr/bin/env bash
-# tests/e2e/redis_basic.sh — Redis E2E test (ADR 0005, P2-3)
+# tests/e2e/memcached_set_delete.sh — memcached set/delete E2E test (t063)
 #
-# Starts a dummy Python RESP server and runs wrkx with the redis:// URL.
-# Asserts that Requests/sec is within 5% of the -R target and that
-# Transfer/sec is non-zero.  No real Redis installation required.
+# Starts a dummy Python memcached text-protocol server and runs wrkx with a
+# set → get → delete → get workload.  Asserts Requests/sec is within 5% of
+# the -R target.  No real memcached installation required.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 WRK="$ROOT_DIR/wrkx"
-REDIS_SERVER="$SCRIPT_DIR/redis_mock_server.py"
-LUA_SCRIPT="$ROOT_DIR/scripts/redis_get_set.lua"
-PORT=18379
+MC_SERVER="$SCRIPT_DIR/memcached_mock_server.py"
+LUA_SCRIPT="$ROOT_DIR/scripts/memcached_set_delete.lua"
+PORT=19123
 
 if [[ ! -x "$WRK" ]]; then
-    echo "SKIP: wrkx binary not found at $WRK (build first with 'make')" >&2
+    echo "SKIP: wrkx binary not found at $WRK (build first with 'make EXTENSIONS=memcached')" >&2
     exit 0
 fi
 
-probe=$("$WRK" -t1 -c1 -d1s -R1 "redis://localhost:9" 2>&1 || true)
+probe=$("$WRK" -t1 -c1 -d1s -R1 "memcached://localhost:9" 2>&1 || true)
 if echo "$probe" | grep -q 'no extension provides'; then
-    echo "SKIP: redis extension not built — rebuild with EXTENSIONS=redis" >&2
+    echo "SKIP: memcached extension not built — rebuild with EXTENSIONS=memcached" >&2
     exit 0
 fi
 
@@ -31,10 +31,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-python3 "$REDIS_SERVER" "$PORT" &
+python3 "$MC_SERVER" "$PORT" &
 SERVER_PID=$!
 
-# Wait for the server to accept connections (up to 2 s).
+# Wait up to 2 s for the server to accept connections.
 for i in $(seq 1 20); do
     if python3 -c "import socket; s=socket.socket(); s.connect(('127.0.0.1', $PORT)); s.close()" 2>/dev/null; then
         break
@@ -43,15 +43,14 @@ for i in $(seq 1 20); do
 done
 
 # ---- low-rate run -------------------------------------------------------
-# -R20 over 3 s: expect at least 19 Requests/sec (within 5%).
-output=$("$WRK" -t1 -c5 -d3s -R20 -s "$LUA_SCRIPT" "redis://localhost:$PORT")
+# -R20 over 3 s: expect ≥19 Requests/sec (within 5%).
+output=$("$WRK" -t1 -c5 -d3s -R20 -s "$LUA_SCRIPT" "memcached://localhost:$PORT")
 echo "$output"
 
 if ! echo "$output" | grep -q "Requests/sec"; then
     echo "FAIL: 'Requests/sec' not found in output" >&2
     exit 1
 fi
-
 if ! echo "$output" | grep -q "Transfer/sec"; then
     echo "FAIL: 'Transfer/sec' not found in output" >&2
     exit 1
@@ -62,12 +61,11 @@ if [[ -z "$rps" || "$rps" -lt 19 ]]; then
     echo "FAIL: Requests/sec ($rps) < 19 (expected ≥19 at -R20)" >&2
     exit 1
 fi
-
 echo "PASS: low-rate run — Requests/sec=${rps}"
 
 # ---- higher-rate run ----------------------------------------------------
-# -R200 over 3 s: expect at least 190 Requests/sec (within 5%).
-output=$("$WRK" -t1 -c20 -d3s -R200 -s "$LUA_SCRIPT" "redis://localhost:$PORT")
+# -R200 over 3 s: expect ≥190 Requests/sec (within 5%).
+output=$("$WRK" -t1 -c20 -d3s -R200 -s "$LUA_SCRIPT" "memcached://localhost:$PORT")
 echo "$output"
 
 rps=$(echo "$output" | grep "Requests/sec" | awk '{print $2}' | cut -d. -f1)
@@ -75,6 +73,6 @@ if [[ -z "$rps" || "$rps" -lt 190 ]]; then
     echo "FAIL: Requests/sec ($rps) < 190 (expected ≥190 at -R200)" >&2
     exit 1
 fi
-
 echo "PASS: higher-rate run — Requests/sec=${rps}"
-echo "PASS: redis_basic"
+
+echo "PASS: memcached_set_delete"
