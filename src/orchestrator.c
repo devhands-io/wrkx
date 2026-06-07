@@ -22,6 +22,7 @@
 #include <pthread.h>
 #include <inttypes.h>
 #include <unistd.h>
+#include <errno.h>
 #include <sched.h>
 
 #include "orchestrator.h"
@@ -37,9 +38,10 @@
 
 /* Max recordable latency of 1 day (matches wrk.c). */
 #define MAX_LATENCY         (24L * 60 * 60 * 1000000)
-#define CALIBRATE_DELAY_MS  10000
-#define TIMEOUT_INTERVAL_MS 2000
-#define DEFAULT_TIMEOUT_MS  2000
+#define CALIBRATE_DELAY_MS       10000
+#define TIMEOUT_INTERVAL_MS      2000
+#define DEFAULT_TIMEOUT_MS       2000
+#define INITIAL_CONNECT_RETRY_MS 100
 
 /* ------------------------------------------------------------------------- */
 /* Internal types                                                            */
@@ -72,6 +74,7 @@ typedef struct oconn {
 
     uint64_t         start;      /* timestamp of last send (timeout watchdog) */
     bool             in_flight;  /* a request is currently outstanding        */
+    bool             initial_connect_error_counted; /* true once errors.connect charged for this conn */
 } oconn;
 
 typedef struct othread {
@@ -190,8 +193,21 @@ static void socket_readable(aeEventLoop *loop, int fd, void *data, int mask);
 static int delayed_initial_connect(aeEventLoop *loop, long long id, void *data) {
     (void)loop; (void)id;
     oconn *c = data;
-    c->rate.thread_start = time_us();
-    oc_connect(c->thread, c);
+    if (!c->initial_connect_error_counted)
+        c->rate.thread_start = time_us(); /* set once: preserves pacing/latency baseline */
+    if (oc_connect(c->thread, c) == -1) {
+        int e = errno;
+        /* Undo the duplicate increment before branching so errors.connect always equals
+         * the number of unique connections that failed initial connect, not attempt count. */
+        if (c->initial_connect_error_counted)
+            c->thread->errors.connect--;
+        /* Retry selected TCP-level failures; resource/ae failures (EMFILE, ENOMEM) stop here. */
+        if (e != ECONNREFUSED && e != ETIMEDOUT &&
+            e != ENETUNREACH  && e != EHOSTUNREACH && e != ECONNRESET)
+            return AE_NOMORE;
+        c->initial_connect_error_counted = true;
+        return INITIAL_CONNECT_RETRY_MS;
+    }
     return AE_NOMORE;
 }
 

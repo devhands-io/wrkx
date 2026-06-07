@@ -40,6 +40,7 @@ transport_status transport_connect(transport *t, int *fd_out) {
     if (fd < 0) return TRANSPORT_ERROR;
 
     flags = fcntl(fd, F_GETFL, 0);
+    if (flags == -1) { close(fd); return TRANSPORT_ERROR; }
     if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
         close(fd);
         return TRANSPORT_ERROR;
@@ -47,7 +48,9 @@ transport_status transport_connect(transport *t, int *fd_out) {
 
     if (connect(fd, addr->ai_addr, addr->ai_addrlen) == -1) {
         if (errno != EINPROGRESS) {
+            int err = errno; /* save before close() may overwrite */
             close(fd);
+            errno = err;
             return TRANSPORT_ERROR;
         }
     }
