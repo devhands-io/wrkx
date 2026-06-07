@@ -22,6 +22,7 @@
 #include <pthread.h>
 #include <inttypes.h>
 #include <unistd.h>
+#include <sys/ioctl.h>
 #include <errno.h>
 #include <sched.h>
 #include <sys/resource.h>
@@ -506,7 +507,7 @@ static int calibrate(aeEventLoop *loop, long long id, void *data) {
     t->requests     = 0;
 
     snprintf(t->cal_msg, sizeof(t->cal_msg),
-             "  Thread calibration: mean lat.: %.3fms, rate sampling interval: %dms",
+             "Thread calibration: mean lat.: %.3fms, rate sampling interval: %dms",
              mean / 1000.0, interval);
     __sync_fetch_and_add(&t->orch->calibrated_threads, 1);
 
@@ -609,8 +610,22 @@ static void *thread_main(void *arg) {
 /* Report stage (CLI-side reporter, adapted from wrk.c)                      */
 /* ------------------------------------------------------------------------- */
 
+static void print_rule(void) {
+    struct winsize ws;
+    int w = (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
+            ? ws.ws_col : 100;
+    for (int i = 0; i < w; i++) putchar('-');
+    putchar('\n');
+}
+
+static void print_section(const char *name) {
+    printf("\n%s\n", name);
+    print_rule();
+}
+
 static void print_stats_header(void) {
-    printf("  Thread Stats%6s%11s%8s%12s\n", "Avg", "Stdev", "Max", "+/- Stdev");
+    printf("%-14s%-12s%-12s%-12s%s\n",
+           "Thread Stats", "Avg", "Stdev", "Max", "+/- Stdev");
 }
 
 static void print_units(long double n, char *(*fmt)(long double), int width) {
@@ -628,30 +643,31 @@ static void print_units(long double n, char *(*fmt)(long double), int width) {
 }
 
 static void print_stats(const char *name, stats *s, char *(*fmt)(long double)) {
-    uint64_t max = s->max;
+    uint64_t max    = s->max;
     long double mean  = stats_summarize(s);
     long double stdev = stats_stdev(s, mean);
 
-    printf("    %-10s", name);
-    print_units(mean,  fmt, 8);
-    print_units(stdev, fmt, 10);
-    print_units(max,   fmt, 9);
-    printf("%8.2Lf%%\n", stats_within_stdev(s, mean, stdev, 1));
+    char *smean  = fmt(mean);
+    char *sstdev = fmt(stdev);
+    char *smax   = fmt((long double)max);
+
+    printf("%-14s%-12s%-12s%-12s%.2Lf%%\n",
+           name, smean, sstdev, smax,
+           stats_within_stdev(s, mean, stdev, 1));
+
+    free(smean);
+    free(sstdev);
+    free(smax);
 }
 
-static void print_hdr_latency(struct hdr_histogram *h, const char *desc,
-                               bool print_spectrum) {
+static void print_hdr_latency(struct hdr_histogram *h, const char *desc) {
     long double pcts[] = { 50.0, 75.0, 90.0, 99.0, 99.9, 99.99, 99.999, 100.0 };
-    printf("  Latency Distribution (HdrHistogram - %s)\n", desc);
+    printf("Latency Distribution (HdrHistogram - %s)\n", desc);
     for (size_t i = 0; i < sizeof(pcts) / sizeof(pcts[0]); i++) {
         int64_t n = hdr_value_at_percentile(h, (double)pcts[i]);
         printf("%7.3Lf%%", pcts[i]);
         print_units((long double)n, format_time_us, 10);
         printf("\n");
-    }
-    if (print_spectrum) {
-        printf("\n%s\n", "  Detailed Percentile spectrum:");
-        hdr_percentiles_print(h, stdout, 5, 1000.0, CLASSIC);
     }
 }
 
@@ -679,7 +695,7 @@ static void *progress_main(void *raw) {
 
         double pct    = (double)s / (double)cal_total;
         int    filled = (int)(pct * bar_width);
-        printf("\r  Calibrating: [");
+        printf("\rCalibrating: [");
         for (int i = 0; i < bar_width; i++) {
             if      (i < filled)               putchar('=');
             else if (i == filled && pct < 1.0) putchar('>');
@@ -722,7 +738,7 @@ static void *progress_main(void *raw) {
         uint64_t el_s   = elapsed  / 1000000;
         uint64_t tot_s  = (total_us + 999999) / 1000000;
 
-        printf("\r  Progress: [");
+        printf("\rProgress: [");
         for (int i = 0; i < bar_width; i++) {
             if      (i < filled)               putchar('=');
             else if (i == filled && pct < 1.0) putchar('>');
@@ -988,24 +1004,42 @@ int orchestrator_run(orchestrator *o) {
             latency_stats->max = hdr_max(o->latency_histogram);
             latency_stats->histogram = o->latency_histogram;
 
+            print_section("Latency");
             print_stats_header();
             print_stats("Latency", latency_stats, format_time_us);
             print_stats("Req/Sec", o->rps, format_metric);
 
             if (o->cfg.latency) {
-                print_hdr_latency(o->latency_histogram,
-                                  "Recorded Latency",
-                                  !o->cfg.latency_dist_only);
-                printf("----------------------------------------------------------\n");
+                printf("\n");
+                print_hdr_latency(o->latency_histogram, "Recorded Latency");
             }
             if (o->cfg.u_latency) {
                 printf("\n");
                 print_hdr_latency(o->u_latency_histogram,
                                   "Uncorrected Latency (measured without taking "
-                                  "delayed starts into account)",
-                                  !o->cfg.latency_dist_only);
-                printf("----------------------------------------------------------\n");
+                                  "delayed starts into account)");
             }
+
+            /* Latency spectrum — only when full spectrum requested (-L / -U
+             * without -l).  Both histograms share the same section header. */
+            bool has_spectrum = !o->cfg.latency_dist_only &&
+                                (o->cfg.latency || o->cfg.u_latency);
+            if (has_spectrum) {
+                print_section("Latency spectrum");
+                if (o->cfg.latency) {
+                    printf("Detailed Percentile spectrum:\n");
+                    hdr_percentiles_print(o->latency_histogram,
+                                         stdout, 5, 1000.0, CLASSIC);
+                }
+                if (o->cfg.u_latency) {
+                    if (o->cfg.latency) printf("\n");
+                    printf("Uncorrected Detailed Percentile spectrum:\n");
+                    hdr_percentiles_print(o->u_latency_histogram,
+                                         stdout, 5, 1000.0, CLASSIC);
+                }
+            }
+
+            print_section("Summary");
 
             long double runtime_s = elapsed / 1000000.0;
             long double req_per_s = runtime_s > 0 ? complete / runtime_s : 0;
@@ -1020,7 +1054,7 @@ int orchestrator_run(orchestrator *o) {
 
             char *window_time = format_time_us((long double)elapsed);
             char *window_read = format_binary((long double)bytes);
-            printf("  Measurement: %" PRIu64 " requests in %s, %sB read\n",
+            printf("Measurement: %" PRIu64 " requests in %s, %sB read\n",
                    complete, window_time, window_read);
             free(window_time);
             free(window_read);
@@ -1028,31 +1062,31 @@ int orchestrator_run(orchestrator *o) {
             char *total_time = format_time_us((long double)total_us);
             char *total_read = format_binary((long double)(bytes + ramp_bytes));
             char *ramp_time  = format_time_us((long double)ramp_us);
-            printf("  Total:       %" PRIu64 " requests in %s, %sB read"
+            printf("Total:       %" PRIu64 " requests in %s, %sB read"
                    " (+ %s ramp-up, %" PRIu64 " req excluded)\n",
                    total_reqs, total_time, total_read, ramp_time, ramp_complete);
             free(total_time);
             free(total_read);
             free(ramp_time);
 
+            printf("Requests/sec: %8.2Lf\n", req_per_s);
+            char *bps = format_binary(runtime_s > 0 ? bytes / runtime_s : 0);
+            printf("Transfer/sec: %9sB\n", bps);
+            free(bps);
+
             if (agg.connect || agg.read || agg.write || agg.timeout) {
-                printf("  Socket errors: connect %u, read %u, write %u, "
+                printf("Socket errors: connect %u, read %u, write %u, "
                        "timeout %u\n",
                        agg.connect, agg.read, agg.write, agg.timeout);
                 if (agg.connect)
-                    printf("    Connect: %u recovered, %u abandoned"
+                    printf("  Connect: %u recovered, %u abandoned"
                            " (%u retrying at end)\n",
                            agg.connect_recovered, agg.connect_abandoned,
                            agg.connect - agg.connect_recovered
                                        - agg.connect_abandoned);
             }
             if (agg.status)
-                printf("  Non-2xx or 3xx responses: %u\n", agg.status);
-
-            printf("Requests/sec: %9.2Lf\n", req_per_s);
-            char *bps = format_binary(runtime_s > 0 ? bytes / runtime_s : 0);
-            printf("Transfer/sec: %10sB\n", bps);
-            free(bps);
+                printf("Non-2xx or 3xx responses: %u\n", agg.status);
 
             stats_free(latency_stats);  /* zcalloc'd — free() crashes on glibc */
         }

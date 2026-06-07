@@ -13,17 +13,27 @@ info "detected platform: $TARGET"
 
 # -- Parse optional args -------------------------------------------------------
 QUICKJS_ENABLED=0
+CONFIGURE_FLAGS=""
 for arg in "$@"; do
   case "$arg" in
-    --with-openssl=*) OPENSSL_PREFIX="${arg#*=}" ;;
-    --prefix=*)       PREFIX="${arg#*=}" ;;
-    --with-quickjs)   QUICKJS_ENABLED=1 ;;
+    --with-openssl=*)
+      OPENSSL_PREFIX="${arg#*=}"
+      CONFIGURE_FLAGS="$CONFIGURE_FLAGS $arg"
+      ;;
+    --prefix=*)
+      PREFIX="${arg#*=}"
+      CONFIGURE_FLAGS="$CONFIGURE_FLAGS $arg"
+      ;;
+    --with-quickjs)
+      QUICKJS_ENABLED=1
+      ;;
     --help)
       echo "Usage: ./configure [--with-openssl=PATH] [--prefix=PATH] [--with-quickjs]"
       exit 0 ;;
     *) die "unknown option: $arg" ;;
   esac
 done
+CONFIGURE_FLAGS="${CONFIGURE_FLAGS# }"   # trim leading space
 
 # -- Start writing config.mk ---------------------------------------------------
 cat > "$CONFIG_MK" <<EOF
@@ -117,6 +127,8 @@ esac
 cat >> "$CONFIG_MK" <<EOF
 
 QUICKJS_ENABLED := $QUICKJS_ENABLED
+
+CONFIGURE_FLAGS := $CONFIGURE_FLAGS
 EOF
 if [ "$QUICKJS_ENABLED" = "1" ]; then
   info "QuickJS enabled (deps/quickjs)"
