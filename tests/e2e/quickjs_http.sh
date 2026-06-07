@@ -48,10 +48,8 @@ for i in $(seq 1 20); do
     sleep 0.1
 done
 
-# Use -t1 for t073: JSContext is not thread-safe without clone() (t074).
-# Multi-thread isolation is verified once clone is wired in t074.
 set +e
-"$WRK" -t1 -c5 -d3s -R50 \
+"$WRK" -t4 -c20 -d3s -R50 \
     --engine=quickjs \
     -s "$JS_SCRIPT" \
     "http://127.0.0.1:$PORT/" 2>/dev/null | tr -d '\r' > "$TMP"

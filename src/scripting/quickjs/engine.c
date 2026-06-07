@@ -253,6 +253,40 @@ static char *qjs_request(script_engine *se, size_t *len_out) {
     return out;   /* caller frees */
 }
 
+static void qjs_response(script_engine *se, int status,
+                          size_t bytes, uint64_t latency_us) {
+    if (!se) return;
+    qjs_engine *e = (qjs_engine *) se;
+    JSContext  *ctx = e->ctx;
+
+    JSValue fn = JS_GetPropertyStr(ctx, e->global, "response");
+    if (!JS_IsFunction(ctx, fn)) { JS_FreeValue(ctx, fn); return; }
+
+    JSValue args[3] = {
+        JS_NewInt32(ctx,  status),
+        JS_NewUint32(ctx, (uint32_t) bytes),
+        JS_NewFloat64(ctx, (double) latency_us / 1000.0),  /* µs → ms */
+    };
+    JSValue r = JS_Call(ctx, fn, e->global, 3, args);
+    if (JS_IsException(r)) dump_exception(ctx);
+    JS_FreeValue(ctx, r);
+    for (int i = 0; i < 3; i++) JS_FreeValue(ctx, args[i]);
+    JS_FreeValue(ctx, fn);
+}
+
+static script_engine *qjs_clone(script_engine *src) {
+    if (!src) return NULL;
+    qjs_engine *s = (qjs_engine *) src;
+
+    script_engine *e = qjs_create(s->path);       /* step 1: fresh runtime + script */
+    if (!e) return NULL;
+    /* step 2: register_helpers replay — slotted here, implemented in t075 */
+    if (s->url || s->n_headers)                    /* step 3: configure replay */
+        qjs_configure(e, s->url,
+                      (const char * const *) s->headers, s->n_headers);
+    return e;
+}
+
 static void qjs_destroy(script_engine *se) {
     if (!se) return;
     qjs_engine *e = (qjs_engine *) se;
@@ -289,10 +323,12 @@ static script_api qjs_api = {
     .create       = qjs_create,
     .configure    = qjs_configure,
     .capabilities = qjs_capabilities,
+    .clone        = qjs_clone,
     .init         = qjs_init,
     .request      = qjs_request,
+    .response     = qjs_response,
     .destroy      = qjs_destroy,
-    /* register_helpers, clone, response, done: t074-t075 */
+    /* register_helpers, done: t075 */
 };
 
 script_api *quickjs_script_api(void) {

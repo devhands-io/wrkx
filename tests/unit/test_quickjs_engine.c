@@ -251,6 +251,126 @@ void test_capabilities_with_response_sets_both_bits(void) {
 }
 
 /* -------------------------------------------------------------------------
+ * response hook (t074)
+ * ---------------------------------------------------------------------- */
+
+void test_response_calls_js_function(void) {
+    const char *path = write_script(
+        "var last_status = 0;\n"
+        "function response(status, bytes, ms) { last_status = status; }\n");
+    script_api *api = quickjs_script_api();
+    script_engine *e = api->create(path);
+    TEST_ASSERT_NOT_NULL(e);
+
+    api->response(e, 200, 512, 4500);
+
+    char *val = engine_eval_str(e, "String(last_status)");
+    TEST_ASSERT_NOT_NULL(val);
+    TEST_ASSERT_EQUAL_STRING("200", val);
+    free(val);
+
+    api->destroy(e);
+}
+
+void test_response_missing_is_safe(void) {
+    script_api *api = quickjs_script_api();
+    script_engine *e = api->create(NULL);
+    TEST_ASSERT_NOT_NULL(e);
+    api->response(e, 404, 0, 0);   /* no response() defined — must not crash */
+    api->destroy(e);
+}
+
+void test_response_exception_is_safe(void) {
+    const char *path = write_script(
+        "function response() { throw new Error('oops'); }\n");
+    script_api *api = quickjs_script_api();
+    script_engine *e = api->create(path);
+    TEST_ASSERT_NOT_NULL(e);
+    api->response(e, 500, 0, 0);   /* throws → must not crash or abort */
+    api->destroy(e);
+}
+
+/* -------------------------------------------------------------------------
+ * clone (t074)
+ * ---------------------------------------------------------------------- */
+
+void test_clone_independent_request_state(void) {
+    /* Per-call counter must not be shared across clones. */
+    const char *path = write_script(
+        "var n = 0;\n"
+        "function request() { n++; return String(n); }\n");
+    script_api *api = quickjs_script_api();
+    TEST_ASSERT_NOT_NULL(api->clone);
+
+    script_engine *orig   = api->create(path);
+    script_engine *cloned = api->clone(orig);
+    TEST_ASSERT_NOT_NULL(cloned);
+
+    /* Advance original three times. */
+    for (int i = 0; i < 3; i++) { free(api->request(orig, NULL)); }
+
+    /* Clone's counter must still be at 0. */
+    char *val = engine_eval_str(cloned, "String(n)");
+    TEST_ASSERT_NOT_NULL(val);
+    TEST_ASSERT_EQUAL_STRING("0", val);
+    free(val);
+
+    api->destroy(orig);
+    api->destroy(cloned);
+}
+
+void test_clone_replays_configure(void) {
+    script_api *api = quickjs_script_api();
+    script_engine *orig = api->create(NULL);
+    api->configure(orig, "http://bench.example.com:9090/api", NULL, 0);
+
+    script_engine *cloned = api->clone(orig);
+    TEST_ASSERT_NOT_NULL(cloned);
+
+    char *host = engine_eval_str(cloned, "wrk.host");
+    TEST_ASSERT_NOT_NULL(host);
+    TEST_ASSERT_EQUAL_STRING("bench.example.com", host);
+    free(host);
+
+    api->destroy(orig);
+    api->destroy(cloned);
+}
+
+void test_clone_destroy_independent(void) {
+    /* Destroy the original; the clone must still be usable. */
+    const char *path = write_script("function request() { return 'ok'; }\n");
+    script_api *api = quickjs_script_api();
+    script_engine *orig   = api->create(path);
+    script_engine *cloned = api->clone(orig);
+    TEST_ASSERT_NOT_NULL(cloned);
+
+    api->destroy(orig);   /* free the original first */
+
+    size_t len = 0;
+    char *buf = api->request(cloned, &len);
+    TEST_ASSERT_NOT_NULL(buf);
+    TEST_ASSERT_EQUAL_STRING("ok", buf);
+    free(buf);
+
+    api->destroy(cloned);
+}
+
+void test_clone_null_script(void) {
+    /* clone of a NULL-script engine produces an equivalent engine. */
+    script_api *api = quickjs_script_api();
+    script_engine *orig   = api->create(NULL);
+    script_engine *cloned = api->clone(orig);
+    TEST_ASSERT_NOT_NULL(cloned);
+
+    /* Neither has a request() — both return NULL. */
+    TEST_ASSERT_NULL(api->request(orig,   NULL));
+    TEST_ASSERT_NULL(api->request(cloned, NULL));
+
+    api->destroy(orig);
+    api->destroy(cloned);
+}
+
+/* -------------------------------------------------------------------------
  * main
  * ---------------------------------------------------------------------- */
 
@@ -275,6 +395,15 @@ int main(void) {
     RUN_TEST(test_capabilities_empty_script_is_zero);
     RUN_TEST(test_capabilities_request_only_is_dynamic);
     RUN_TEST(test_capabilities_with_response_sets_both_bits);
+
+    RUN_TEST(test_response_calls_js_function);
+    RUN_TEST(test_response_missing_is_safe);
+    RUN_TEST(test_response_exception_is_safe);
+
+    RUN_TEST(test_clone_independent_request_state);
+    RUN_TEST(test_clone_replays_configure);
+    RUN_TEST(test_clone_destroy_independent);
+    RUN_TEST(test_clone_null_script);
 
     return UNITY_END();
 }
