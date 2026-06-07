@@ -443,9 +443,11 @@ static int connect_socket(thread *thread, connection *c) {
     int fd, flags;
 
     fd = socket(addr->ai_family, addr->ai_socktype, addr->ai_protocol);
+    if (fd == -1) goto error;
 
     flags = fcntl(fd, F_GETFL, 0);
-    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    if (flags == -1) goto error;
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) goto error;
 
     if (connect(fd, addr->ai_addr, addr->ai_addrlen) == -1) {
         if (errno != EINPROGRESS) goto error;
@@ -464,8 +466,12 @@ static int connect_socket(thread *thread, connection *c) {
     }
 
   error:
-    thread->errors.connect++;
-    close(fd);
+    {
+        int err = errno;
+        thread->errors.connect++;
+        if (fd >= 0) close(fd);
+        errno = err;
+    }
     return -1;
 }
 
@@ -478,8 +484,21 @@ static int reconnect_socket(thread *thread, connection *c) {
 
 static int delayed_initial_connect(aeEventLoop *loop, long long id, void *data) {
     connection* c = data;
-    c->thread_start = time_us();
-    connect_socket(c->thread, c);
+    if (!c->initial_connect_error_counted)
+        c->thread_start = time_us(); /* set once: preserves wrk2 pacing/latency baseline */
+    if (connect_socket(c->thread, c) == -1) {
+        int e = errno;
+        /* Undo the duplicate increment before branching so errors.connect always equals
+         * the number of unique connections that failed initial connect, not attempt count. */
+        if (c->initial_connect_error_counted)
+            c->thread->errors.connect--;
+        /* Retry selected TCP-level failures; resource/ae failures (EMFILE, ENOMEM, etc.) stop here. */
+        if (e != ECONNREFUSED && e != ETIMEDOUT &&
+            e != ENETUNREACH  && e != EHOSTUNREACH && e != ECONNRESET)
+            return AE_NOMORE;
+        c->initial_connect_error_counted = true;
+        return INITIAL_CONNECT_RETRY_MS;
+    }
     return AE_NOMORE;
 }
 

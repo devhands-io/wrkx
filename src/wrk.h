@@ -21,9 +21,10 @@
 #define RECVBUF  8192
 #define SAMPLES  100000000
 
-#define SOCKET_TIMEOUT_MS   2000
-#define CALIBRATE_DELAY_MS  10000
-#define TIMEOUT_INTERVAL_MS 2000
+#define SOCKET_TIMEOUT_MS        2000
+#define CALIBRATE_DELAY_MS       10000
+#define TIMEOUT_INTERVAL_MS      2000
+#define INITIAL_CONNECT_RETRY_MS 100
 
 typedef struct {
     pthread_t thread;
@@ -80,6 +81,7 @@ typedef struct connection {
     uint64_t actual_latency_start;
     bool has_pending;
     bool caught_up;
+    bool initial_connect_error_counted; /* true once errors.connect charged for this conn */
     // Internal tracking numbers (used purely for debugging):
     uint64_t latest_should_send_time;
     uint64_t latest_expected_start;
