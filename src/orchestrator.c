@@ -76,6 +76,10 @@ typedef struct oconn {
     uint64_t         start;      /* timestamp of last send (timeout watchdog) */
     bool             in_flight;  /* a request is currently outstanding        */
     bool             initial_connect_error_counted; /* true once errors.connect charged for this conn */
+    bool             initial_response_done; /* true after first response received; triggers
+                                               signal_connection_ready so the measurement
+                                               window never opens before all first-requests
+                                               have completed */
 } oconn;
 
 typedef struct othread {
@@ -226,7 +230,12 @@ static int delayed_initial_connect(aeEventLoop *loop, long long id, void *data) 
         /* Success. If this connection previously failed, count the recovery. */
         if (c->initial_connect_error_counted)
             t->errors.connect_recovered++;
-        signal_connection_ready(t);
+        /* Do NOT signal here. signal_connection_ready fires after the first
+         * response for this connection (in record_response), so connections_ready_at
+         * is only set once every connection slot has completed its initial
+         * request/response cycle. That prevents first-requests from leaking into
+         * the measurement window when a connection establishes right as the last
+         * slot is resolved. */
         return AE_NOMORE;
     }
 
@@ -272,6 +281,13 @@ static int oc_connect(othread *t, oconn *c) {
 }
 
 static int oc_reconnect(othread *t, oconn *c) {
+    /* If a transport error occurs before the first response arrives, this
+     * connection slot will never call record_response with initial_response_done
+     * false. Signal ready now so connections_ready_at is not blocked forever. */
+    if (!c->initial_response_done) {
+        c->initial_response_done = true;
+        signal_connection_ready(t);
+    }
     protocol *p = t->orch->proto;
     if (c->conn.fd >= 0)
         aeDeleteFileEvent(t->loop, c->conn.fd, AE_WRITABLE | AE_READABLE);
@@ -370,6 +386,15 @@ static bool record_response(othread *t, oconn *c) {
     int64_t expected = rate_expected_latency(&c->rate, now, &uncorrected);
 
     c->in_flight = false;
+
+    /* First response for this connection: signal the slot as resolved.
+     * connections_ready_at is set when all slots fire this, which guarantees
+     * the measurement window only opens after every connection has completed
+     * its initial request/response cycle. */
+    if (!c->initial_response_done) {
+        c->initial_response_done = true;
+        signal_connection_ready(t);
+    }
 
     /* The orchestrator core sends one request per batch (pipelining is a
      * protocol concern handled inside proto->readable), so every completion
@@ -826,6 +851,24 @@ int orchestrator_run(orchestrator *o) {
     bool dynamic_workload = o->n_threads > 0 && o->threads[0].dynamic;
     if (!dynamic_workload && o->api && o->api->request && o->engine) {
         o->static_request_buf = o->api->request(o->engine, &o->static_request_len);
+    }
+
+    /* Warn if the per-connection inter-request interval exceeds the test duration.
+     * In that case every connection fires at most once (the initial burst) and
+     * the measurement window will be empty or nearly empty.
+     * Condition: total_connections / rate > duration_s
+     *   i.e. each connection fires less than once over the whole test. */
+    if (o->cfg.rate > 0 &&
+        (double)o->total_connections / (double)o->cfg.rate >
+        (double)duration_us / 1e6) {
+        double interval_s = (double)o->total_connections / (double)o->cfg.rate;
+        fprintf(stderr,
+            "Warning: at -R%"PRIu64" with %"PRIu64" connections each connection "
+            "fires once every %.1fs; the %"PRIu64"s test is shorter than that "
+            "interval so only the initial burst will appear in the measurement "
+            "window. Reduce -c or increase -R or -d.\n",
+            o->cfg.rate, o->total_connections, interval_s,
+            duration_us / 1000000);
     }
 
     /* Warn if the per-process fd limit is too low to open all requested sockets.
