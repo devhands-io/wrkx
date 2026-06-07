@@ -1,8 +1,35 @@
 title: script API contract cleanup — vtable helper registration + capability detection
-status: pending
+status: completed
 adr: 0005
 adr-step: P5-1
 depends: t068
+
+## Outcome
+
+Done. `script_api` gained `capabilities` and `register_helpers` vtable slots; the
+global `script_register_helpers` became engine-internal `lua_register_helpers`
+(exported via `lua/engine.h`, wired into the vtable). LuaJIT `capabilities()`
+reports `SCRIPT_CAP_DYNAMIC_REQUEST`/`SCRIPT_CAP_RESPONSE_HOOK` by detecting
+user-defined global `request`/`response` functions (wrk.lua's static default
+lives on `wrk.request`, never as a global). Engine-tagged-namespace selection
+lives in the new header-only `src/scripting/helper_tag.h` (`helper_ns_select`),
+applied in `main.c`; redis/memcached extensions now register `redis@lua` /
+`memcached@lua`.
+
+Implementation notes vs the plan:
+- Capability detection uses presence of global `request`/`response` rather than a
+  "diff against the wrk.lua default reference" — wrk.lua installs no global
+  `request` (it sets `wrk.request` inside `wrk.init`), so global presence is the
+  exact, simpler signal for "user overrode".
+- The selection predicate was extracted to `helper_tag.h` (header-only, inline)
+  so both `main.c` and the unit test exercise identical logic.
+- `extensions/redis/init.c` added to the `test_redis_lua` link deps so the redis
+  `@lua` tagging audit runs as a unit test (memcached's audit reused the existing
+  `test_memcached_extension` registration test).
+
+Verified: `make test` and `make test-asan` green (incl. memcached/redis e2e and
+release-binary smoke); `include/wrkx_extension.h` and `src/orchestrator.c` git
+diffs empty.
 
 ## Why this is the first Phase 5 task
 
