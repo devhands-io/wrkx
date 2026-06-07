@@ -1052,41 +1052,43 @@ int orchestrator_run(orchestrator *o) {
             uint64_t total_reqs = complete + ramp_complete;
             uint64_t total_us   = elapsed  + ramp_us;
 
-            char *window_time = format_time_us((long double)elapsed);
-            char *window_read = format_binary((long double)bytes);
-            printf("Measurement: %" PRIu64 " requests in %s, %sB read\n",
-                   complete, window_time, window_read);
-            free(window_time);
-            free(window_read);
-
             char *total_time = format_time_us((long double)total_us);
             char *total_read = format_binary((long double)(bytes + ramp_bytes));
             char *ramp_time  = format_time_us((long double)ramp_us);
-            printf("Total:       %" PRIu64 " requests in %s, %sB read"
+            printf("%-16s%" PRIu64 " requests in %s, %sB read"
                    " (+ %s ramp-up, %" PRIu64 " req excluded)\n",
-                   total_reqs, total_time, total_read, ramp_time, ramp_complete);
+                   "Total:", total_reqs, total_time, total_read,
+                   ramp_time, ramp_complete);
             free(total_time);
             free(total_read);
             free(ramp_time);
 
-            printf("Requests/sec: %8.2Lf\n", req_per_s);
+            char *window_time = format_time_us((long double)elapsed);
+            char *window_read = format_binary((long double)bytes);
+            printf("%-16s%" PRIu64 " requests in %s, %sB read\n",
+                   "Measurement:", complete, window_time, window_read);
+            free(window_time);
+            free(window_read);
+
+            printf("%-16s%.2Lf\n", "Requests/sec:", req_per_s);
             char *bps = format_binary(runtime_s > 0 ? bytes / runtime_s : 0);
-            printf("Transfer/sec: %9sB\n", bps);
+            printf("%-16s%sB\n", "Transfer/sec:", bps);
             free(bps);
 
             if (agg.connect || agg.read || agg.write || agg.timeout) {
-                printf("Socket errors: connect %u, read %u, write %u, "
-                       "timeout %u\n",
+                printf("%-16sconnect %u, read %u, write %u, timeout %u\n",
+                       "Socket errors:",
                        agg.connect, agg.read, agg.write, agg.timeout);
                 if (agg.connect)
-                    printf("  Connect: %u recovered, %u abandoned"
+                    printf("  %-14s%u recovered, %u abandoned"
                            " (%u retrying at end)\n",
+                           "Connect:",
                            agg.connect_recovered, agg.connect_abandoned,
                            agg.connect - agg.connect_recovered
                                        - agg.connect_abandoned);
             }
             if (agg.status)
-                printf("Non-2xx or 3xx responses: %u\n", agg.status);
+                printf("%-16s%u\n", "Non-2xx/3xx:", agg.status);
 
             stats_free(latency_stats);  /* zcalloc'd — free() crashes on glibc */
         }

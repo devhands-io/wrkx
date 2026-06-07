@@ -44,18 +44,18 @@ if [[ "$WRK_RC" -ne 0 ]]; then
 fi
 
 # Assert the non-2xx line is present
-if ! grep -q "Non-2xx or 3xx responses:" "$TMP"; then
-    echo "FAIL: 'Non-2xx or 3xx responses:' not found in output (expected ~10% of ~250 requests)"
+if ! grep -q "Non-2xx/3xx:" "$TMP"; then
+    echo "FAIL: 'Non-2xx/3xx:' not found in output (expected ~10% of ~250 requests)"
     cat "$TMP"
     exit 1
 fi
 
 # Extract the count and assert > 0
-err_count=$(grep "Non-2xx or 3xx responses:" "$TMP" | head -1 | awk '{print $NF}')
+err_count=$(grep "Non-2xx/3xx:" "$TMP" | head -1 | awk '{print $NF}')
 if [[ -z "$err_count" || "$err_count" -eq 0 ]]; then
     echo "FAIL: error count is 0 or missing (got: '$err_count')"
     cat "$TMP"
     exit 1
 fi
 
-echo "PASS: errors test (Non-2xx or 3xx responses: ${err_count})"
+echo "PASS: errors test (Non-2xx/3xx: ${err_count})"
