@@ -1,16 +1,7 @@
 TODO wrkx
+=========
 
-Bugs:
-- strange behavoir on large connection parameters
-./wrkx -c8 -t8 -d20 -L -R10000  http://localhost
-will make ~10000 requests per second, as requested
-./wrkx -c500 -t8 -d20 -L -R10000  http://localhost
-will make ~4800 requests per second
-./baseline/wrkx0 -c500 -t8 -d20 -L -R10000  http://localhost
-will also make ~4800 requests per second but this is strange as -c500 must be cheap and lead to 10000 RPS as well. 
-Investigate the issue
-- baseline maybe restore 'main' or 'pre-phase0' version and build again?
-- provide the nginx.config maybe that's the promlem. 
+Known bugs:
 
 Backlog:
 • REDIS and other: basic parameters, methods get/set, key ranges, key size
