@@ -1,4 +1,5 @@
-EXT_SRCS     += extensions/memcached/memcached.c \
+EXT_SRCS     += extensions/memcached/mc_codec.c \
+                extensions/memcached/memcached.c \
                 extensions/memcached/init.c
 EXT_INIT_FNS += wrkx_extension_init_memcached
 EXT_CFLAGS   += -Iextensions/memcached
