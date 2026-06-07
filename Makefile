@@ -40,6 +40,9 @@ $(QJS_OBJS): CFLAGS += $(QJS_CFLAGS) -Wno-unused-parameter -Wno-sign-compare \
                        -Wno-unused-but-set-variable
 CFLAGS     += -I$(QJS_DIR) -DWRKX_HAVE_QUICKJS=1
 LAYER_SRC  += src/scripting/quickjs/engine.c
+TEST_QJS_ENGINE_SRC  := tests/unit/test_quickjs_engine.c
+TEST_QJS_ENGINE_BIN  := obj/test_quickjs_engine
+QJS_ENGINE_TEST_DEPS := src/scripting/quickjs/engine.c src/http_parser.c
 endif
 
 # ---------------------------------------------------------------------------
@@ -396,6 +399,27 @@ test-memcached-real:
 	@bash tests/e2e/memcached_real.sh
 
 # ---------------------------------------------------------------------------
+# QuickJS engine unit tests (opt-in: enabled when QUICKJS_ENABLED=1)
+# QuickJS uses system malloc so there is no ASAN/shadow-memory conflict
+# (unlike LuaJIT); both test-unit and test-asan include it when enabled.
+# ---------------------------------------------------------------------------
+ifeq ($(QUICKJS_ENABLED),1)
+# Inject QJS engine test into the standard test-unit run as a prerequisite.
+# Prerequisite targets run before the parent's recipe, so the binary is
+# built and executed before the other unit tests print their summary.
+test-unit: test-quickjs-engine
+
+test-quickjs-engine: $(TEST_QJS_ENGINE_BIN)
+	@./$(TEST_QJS_ENGINE_BIN)
+
+$(TEST_QJS_ENGINE_BIN): $(TEST_QJS_ENGINE_SRC) $(UNITY_SRC) \
+                        $(QJS_ENGINE_TEST_DEPS) $(QJS_OBJS) | $(ODIR)
+	@$(CC) $(CFLAGS) $(UNITY_INC) -Isrc \
+		-o $@ $(TEST_QJS_ENGINE_SRC) $(UNITY_SRC) \
+		$(QJS_ENGINE_TEST_DEPS) $(QJS_OBJS)
+endif
+
+# ---------------------------------------------------------------------------
 # ASAN + UBSan unit tests
 # NOTE: the full wrkx binary is NOT instrumented here — LuaJIT's custom
 # mmap-based allocator conflicts with ASAN's shadow memory on both macOS
@@ -426,6 +450,13 @@ test-asan: | $(ODIR)
 	@./obj/asan_hdr
 	@echo "Running smoke E2E against release binary..."
 	@bash tests/e2e/smoke.sh
+ifeq ($(QUICKJS_ENABLED),1)
+	@echo "Building QuickJS ASAN test binary..."
+	@$(CC) $(CFLAGS) $(ASANFLAGS) $(UNITY_INC) -Isrc \
+		-o obj/asan_quickjs_engine \
+		$(TEST_QJS_ENGINE_SRC) $(UNITY_SRC) $(QJS_ENGINE_TEST_DEPS) $(QJS_OBJS)
+	@./obj/asan_quickjs_engine
+endif
 
 # ---------------------------------------------------------------------------
 # Coverage via gcov
