@@ -336,21 +336,27 @@ void test_command_bytes_usable_as_request(void) {
 
 void wrkx_extension_init_redis(const wrkx_extension_api *ext_api);
 
-static const char *audit_ns;
+/* Track all registered helper namespaces (up to 4) so the audit survives
+ * multiple register_helpers() calls (t075 added a redis@quickjs call). */
+static const char *audit_namespaces[4];
+static int         audit_ns_count;
 
 static void audit_register_protocol(const protocol *p) { (void)p; }
 static void audit_register_helpers(const char *ns, const script_helper *h,
                                    size_t count) {
     (void)h; (void)count;
-    audit_ns = ns;
+    if (audit_ns_count < 4)
+        audit_namespaces[audit_ns_count++] = ns;
 }
 static void audit_register_schema(const char *s, const char *st,
                                   const char *dp, wrkx_configure_fn c) {
     (void)s; (void)st; (void)dp; (void)c;
 }
 
+/* Verify that "redis@lua" is among the registered namespaces (may not be the
+ * only one now that t075 also registers "redis@quickjs" when built with QJS). */
 void test_redis_init_tags_helpers_lua(void) {
-    audit_ns = NULL;
+    audit_ns_count = 0;
     wrkx_extension_api ext = {
         .version           = WRKX_EXTENSION_API_VERSION,
         .register_protocol = audit_register_protocol,
@@ -359,8 +365,14 @@ void test_redis_init_tags_helpers_lua(void) {
     };
     wrkx_extension_init_redis(&ext);
 
-    TEST_ASSERT_NOT_NULL(audit_ns);
-    TEST_ASSERT_EQUAL_STRING("redis@lua", audit_ns);
+    TEST_ASSERT_GREATER_THAN(0, audit_ns_count);
+    int found_lua = 0;
+    for (int i = 0; i < audit_ns_count; i++) {
+        if (audit_namespaces[i] && strcmp(audit_namespaces[i], "redis@lua") == 0)
+            found_lua = 1;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(found_lua,
+        "Expected 'redis@lua' to be registered but it was not found");
 }
 
 /* -------------------------------------------------------------------------

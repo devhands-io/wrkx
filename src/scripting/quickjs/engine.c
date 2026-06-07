@@ -19,15 +19,40 @@
 
 #define QJS_DEFAULT_MEMORY_MB 64
 
+/*
+ * Per-call context bundle passed through the void * engine_ctx ABI to
+ * QuickJS-shaped helper functions (script_helper_fn).
+ *
+ * LAYOUT CONTRACT: must match qjs_helper_ctx in
+ * extensions/redis/redis_quickjs_helpers.h exactly.  Both files include
+ * quickjs.h, so JSContext/JSValueConst/JSValue resolve to the same ABI types.
+ * If you change this definition, change the one in redis_quickjs_helpers.h too.
+ */
+typedef struct {
+    JSContext    *ctx;
+    int           argc;
+    JSValueConst *argv;   /* JS arguments (borrowed for the duration of the call) */
+    JSValue       ret;    /* helper sets this to the JS return value              */
+} qjs_helper_ctx;
+
+/* One recorded register_helpers() call — stored for clone() replay. */
+typedef struct {
+    char                *ns;       /* strdup'd namespace (e.g. "redis") */
+    const script_helper *helpers;  /* points to static table; not owned  */
+    size_t               count;
+} qjs_hrec;
+
 typedef struct {
     JSRuntime *rt;
     JSContext *ctx;
     JSValue    global;
-    /* replay inputs for clone() (t074) */
+    /* replay inputs for clone() */
     char      *path;
     char      *url;
     char     **headers;
     size_t     n_headers;
+    qjs_hrec  *hrecs;      /* recorded register_helpers() calls */
+    size_t     n_hrecs;
 } qjs_engine;
 
 /* -------------------------------------------------------------------------
@@ -274,14 +299,87 @@ static void qjs_response(script_engine *se, int status,
     JS_FreeValue(ctx, fn);
 }
 
+/* -------------------------------------------------------------------------
+ * Helper registration (t075)
+ * ---------------------------------------------------------------------- */
+
+/*
+ * Trampoline: called by the JS engine when a registered helper is invoked.
+ * func_data[0] carries the raw bytes of the script_helper_fn pointer boxed
+ * as an ArrayBuffer so no precision is lost regardless of pointer width.
+ */
+static JSValue js_helper_trampoline(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv,
+                                    int magic, JSValue *func_data) {
+    (void) this_val; (void) magic;
+
+    /* Unwrap the function pointer. */
+    size_t   blen = 0;
+    uint8_t *bp   = JS_GetArrayBuffer(ctx, &blen, func_data[0]);
+    if (!bp || blen != sizeof(script_helper_fn)) return JS_EXCEPTION;
+
+    script_helper_fn fn;
+    memcpy(&fn, bp, sizeof fn);
+
+    qjs_helper_ctx h = {
+        .ctx  = ctx,
+        .argc = argc,
+        .argv = argv,
+        .ret  = JS_UNDEFINED,
+    };
+    int rc = fn(&h);
+    if (rc != 0 && JS_IsUndefined(h.ret)) return JS_EXCEPTION;
+    return h.ret;
+}
+
+static void qjs_register_helpers(script_engine *se, const char *ns,
+                                  const script_helper *helpers, size_t count) {
+    if (!se || !ns || !helpers || count == 0) return;
+    qjs_engine *e   = (qjs_engine *) se;
+    JSContext  *ctx = e->ctx;
+
+    /* Build a JS object with one property per helper. */
+    JSValue obj = JS_NewObject(ctx);
+    for (size_t i = 0; i < count; i++) {
+        script_helper_fn fn = helpers[i].fn;
+        /* Box the raw pointer as an ArrayBuffer so float64 precision is not
+         * an issue on 64-bit targets with high-address code segments. */
+        JSValue carry = JS_NewArrayBufferCopy(ctx,
+                            (const uint8_t *) &fn, sizeof fn);
+        JSValue jsfn  = JS_NewCFunctionData(ctx, js_helper_trampoline,
+                                            /*length*/ 0, /*magic*/ 0,
+                                            /*data_len*/ 1, &carry);
+        JS_FreeValue(ctx, carry);
+        JS_SetPropertyStr(ctx, obj, helpers[i].name, jsfn);
+    }
+    JS_SetPropertyStr(ctx, e->global, ns, obj);
+
+    /* Record for clone() replay. */
+    qjs_hrec *nr = realloc(e->hrecs, (e->n_hrecs + 1) * sizeof *nr);
+    if (nr) {
+        e->hrecs = nr;
+        e->hrecs[e->n_hrecs].ns      = strdup(ns);
+        e->hrecs[e->n_hrecs].helpers = helpers;
+        e->hrecs[e->n_hrecs].count   = count;
+        e->n_hrecs++;
+    }
+}
+
 static script_engine *qjs_clone(script_engine *src) {
     if (!src) return NULL;
     qjs_engine *s = (qjs_engine *) src;
 
-    script_engine *e = qjs_create(s->path);       /* step 1: fresh runtime + script */
+    script_engine *e = qjs_create(s->path);   /* step 1: fresh runtime + script */
     if (!e) return NULL;
-    /* step 2: register_helpers replay — slotted here, implemented in t075 */
-    if (s->url || s->n_headers)                    /* step 3: configure replay */
+
+    /* step 2: replay register_helpers (before configure, matching the
+     * create → register_helpers → configure order used for the template). */
+    for (size_t i = 0; i < s->n_hrecs; i++)
+        qjs_register_helpers(e, s->hrecs[i].ns,
+                             s->hrecs[i].helpers, s->hrecs[i].count);
+
+    /* step 3: configure replay */
+    if (s->url || s->n_headers)
         qjs_configure(e, s->url,
                       (const char * const *) s->headers, s->n_headers);
     return e;
@@ -299,6 +397,8 @@ static void qjs_destroy(script_engine *se) {
     free(e->url);
     for (size_t i = 0; i < e->n_headers; i++) free(e->headers[i]);
     free(e->headers);
+    for (size_t i = 0; i < e->n_hrecs; i++) free(e->hrecs[i].ns);
+    free(e->hrecs);
     free(e);
 }
 
@@ -319,16 +419,17 @@ void *qjs_engine_global(script_engine *se) {
  * ---------------------------------------------------------------------- */
 
 static script_api qjs_api = {
-    .name         = "quickjs",
-    .create       = qjs_create,
-    .configure    = qjs_configure,
-    .capabilities = qjs_capabilities,
-    .clone        = qjs_clone,
-    .init         = qjs_init,
-    .request      = qjs_request,
-    .response     = qjs_response,
-    .destroy      = qjs_destroy,
-    /* register_helpers, done: t075 */
+    .name             = "quickjs",
+    .create           = qjs_create,
+    .configure        = qjs_configure,
+    .capabilities     = qjs_capabilities,
+    .register_helpers = qjs_register_helpers,
+    .clone            = qjs_clone,
+    .init             = qjs_init,
+    .request          = qjs_request,
+    .response         = qjs_response,
+    .destroy          = qjs_destroy,
+    /* .done: t076 */
 };
 
 script_api *quickjs_script_api(void) {

@@ -42,6 +42,15 @@ CFLAGS     += -I$(QJS_DIR) -DWRKX_HAVE_QUICKJS=1
 TEST_QJS_ENGINE_SRC  := tests/unit/test_quickjs_engine.c
 TEST_QJS_ENGINE_BIN  := obj/test_quickjs_engine
 QJS_ENGINE_TEST_DEPS := src/scripting/quickjs/engine.c src/http_parser.c
+# QuickJS-flavoured Redis helpers compiled into the main binary alongside the
+# Lua-flavoured ones (t075).
+EXT_SRCS   += extensions/redis/redis_quickjs_helpers.c
+TEST_QJS_REDIS_SRC   := tests/unit/test_quickjs_redis.c
+TEST_QJS_REDIS_BIN   := obj/test_quickjs_redis
+QJS_REDIS_TEST_DEPS  := src/scripting/quickjs/engine.c src/http_parser.c \
+                        extensions/redis/redis_quickjs_helpers.c \
+                        extensions/redis/redis.c extensions/redis/resp.c \
+                        src/transport.c
 endif
 
 # ---------------------------------------------------------------------------
@@ -334,10 +343,10 @@ $(TEST_LUA_ENGINE_BIN): $(TEST_LUA_ENGINE_SRC) $(UNITY_SRC) $(LUA_ENGINE_DEPS) \
 		$(ODIR)/bytecode.o $(LDFLAGS) $(LIBS)
 
 $(TEST_REDIS_LUA_BIN): $(TEST_REDIS_LUA_SRC) $(UNITY_SRC) $(LUA_REDIS_ENGINE_DEPS) \
-                       $(ODIR)/bytecode.o $(LDIR)/libluajit.a | $(ODIR)
+                       $(QJS_OBJS) $(ODIR)/bytecode.o $(LDIR)/libluajit.a | $(ODIR)
 	@$(CC) $(CFLAGS) $(UNITY_INC) -Iextensions/redis -Isrc -I$(LDIR) \
 		-o $@ $(TEST_REDIS_LUA_SRC) $(UNITY_SRC) $(LUA_REDIS_ENGINE_DEPS) \
-		$(ODIR)/bytecode.o $(LDFLAGS) $(LIBS)
+		$(QJS_OBJS) $(ODIR)/bytecode.o $(LDFLAGS) $(LIBS)
 
 $(TEST_CLI_BIN): $(TEST_CLI_SRC) $(UNITY_SRC) $(CLI_TEST_DEPS) | $(ODIR)
 	@$(CC) $(CFLAGS) $(UNITY_INC) -Isrc \
@@ -409,7 +418,13 @@ ifeq ($(QUICKJS_ENABLED),1)
 # Inject QJS engine test into the standard test-unit run as a prerequisite.
 # Prerequisite targets run before the parent's recipe, so the binary is
 # built and executed before the other unit tests print their summary.
-test-unit: test-quickjs-engine
+test-unit: test-quickjs-engine test-quickjs-redis
+
+# When QuickJS is enabled, init.c (which every Redis/Memcached test links)
+# references redis_quickjs_helpers symbols.  Add the implementation source and
+# the QuickJS library objects to every test that links extensions/redis/init.c
+# so the link succeeds (t075).
+LUA_REDIS_ENGINE_DEPS += extensions/redis/redis_quickjs_helpers.c
 
 test-quickjs-engine: $(TEST_QJS_ENGINE_BIN)
 	@./$(TEST_QJS_ENGINE_BIN)
@@ -419,6 +434,23 @@ $(TEST_QJS_ENGINE_BIN): $(TEST_QJS_ENGINE_SRC) $(UNITY_SRC) \
 	@$(CC) $(CFLAGS) $(UNITY_INC) -Isrc \
 		-o $@ $(TEST_QJS_ENGINE_SRC) $(UNITY_SRC) \
 		$(QJS_ENGINE_TEST_DEPS) $(QJS_OBJS)
+
+test-quickjs-redis: $(TEST_QJS_REDIS_BIN)
+	@./$(TEST_QJS_REDIS_BIN)
+
+$(TEST_QJS_REDIS_BIN): $(TEST_QJS_REDIS_SRC) $(UNITY_SRC) \
+                       $(QJS_REDIS_TEST_DEPS) $(QJS_OBJS) | $(ODIR)
+	@$(CC) $(CFLAGS) $(UNITY_INC) -Isrc -Iextensions/redis \
+		-o $@ $(TEST_QJS_REDIS_SRC) $(UNITY_SRC) \
+		$(QJS_REDIS_TEST_DEPS) $(QJS_OBJS) \
+		$(filter -L%,$(LIBS)) -lssl -lcrypto -lpthread -lm
+
+# E2E: run QuickJS HTTP + Redis smoke tests when QuickJS is built.
+test-e2e: test-e2e-quickjs
+.PHONY: test-e2e-quickjs
+test-e2e-quickjs:
+	@bash tests/e2e/quickjs_http.sh
+	@bash tests/e2e/quickjs_redis_mock.sh
 endif
 
 # ---------------------------------------------------------------------------
@@ -453,11 +485,16 @@ test-asan: | $(ODIR)
 	@echo "Running smoke E2E against release binary..."
 	@bash tests/e2e/smoke.sh
 ifeq ($(QUICKJS_ENABLED),1)
-	@echo "Building QuickJS ASAN test binary..."
+	@echo "Building QuickJS ASAN test binaries..."
 	@$(CC) $(CFLAGS) $(ASANFLAGS) $(UNITY_INC) -Isrc \
 		-o obj/asan_quickjs_engine \
 		$(TEST_QJS_ENGINE_SRC) $(UNITY_SRC) $(QJS_ENGINE_TEST_DEPS) $(QJS_OBJS)
 	@./obj/asan_quickjs_engine
+	@$(CC) $(CFLAGS) $(ASANFLAGS) $(UNITY_INC) -Isrc -Iextensions/redis \
+		-o obj/asan_quickjs_redis \
+		$(TEST_QJS_REDIS_SRC) $(UNITY_SRC) $(QJS_REDIS_TEST_DEPS) $(QJS_OBJS) \
+		$(filter -L%,$(LIBS)) -lssl -lcrypto -lpthread -lm
+	@./obj/asan_quickjs_redis
 endif
 
 # ---------------------------------------------------------------------------
@@ -545,6 +582,7 @@ gate-a-check:
 .PHONY: all clean test test-unit test-e2e test-asan coverage contracts-check \
         test-cli test-orchestrator test-http1 test-redis test-lua-engine test-redis-lua \
         test-extension-api test-memcached-extension test-mc-codec test-mc-request test-mc-lua \
+        test-quickjs-engine test-quickjs-redis test-e2e-quickjs \
         check-extension-headers \
         adr-check gate-a-check \
         baseline baseline-verify compare parity
