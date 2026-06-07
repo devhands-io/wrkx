@@ -24,6 +24,7 @@
 #include "unity.h"
 #include "orchestrator.h"
 #include "proto/proto.h"
+#include "scripting/script_api.h"
 #include "rate.h"
 #include "hdr_histogram.h"
 
@@ -103,6 +104,69 @@ void setUp(void) {
 }
 
 void tearDown(void) {}
+
+/* ------------------------------------------------------------------------- */
+/* Mock script_api for clone/init lifecycle tests                            */
+/* ------------------------------------------------------------------------- */
+
+/* Minimal heap object so distinct clone pointers are detectable. */
+typedef struct { int id; } mock_engine;
+
+static uint32_t mock_caps_value   = 0;
+static int      mock_init_count   = 0;
+static uint64_t mock_init_ids[8]; /* thread_ids passed to init(), in order  */
+static int      mock_clone_count  = 0;
+
+static script_engine *mock_create(const char *file) {
+    (void)file;
+    mock_engine *e = calloc(1, sizeof(*e));
+    return (script_engine *) e;
+}
+
+static uint32_t mock_capabilities(script_engine *e) {
+    (void)e;
+    return mock_caps_value;
+}
+
+static script_engine *mock_clone(script_engine *src) {
+    (void)src;
+    mock_engine *e = calloc(1, sizeof(*e));
+    e->id = ++mock_clone_count;
+    return (script_engine *) e;
+}
+
+static void mock_init(script_engine *e, uint64_t thread_id, uint64_t conns) {
+    (void)e; (void)conns;
+    if (mock_init_count < 8)
+        mock_init_ids[mock_init_count] = thread_id;
+    mock_init_count++;
+}
+
+static char *mock_request(script_engine *e, size_t *len_out) {
+    (void)e;
+    char *buf = strdup("MOCK");
+    if (len_out) *len_out = 4;
+    return buf;
+}
+
+static void mock_destroy(script_engine *e) { free(e); }
+
+static script_api mock_api_static = {
+    .name         = "mock",
+    .create       = mock_create,
+    .capabilities = mock_capabilities,
+    .clone        = mock_clone,
+    .init         = mock_init,
+    .request      = mock_request,
+    .destroy      = mock_destroy,
+};
+
+static void reset_mock(void) {
+    mock_caps_value  = 0;
+    mock_init_count  = 0;
+    mock_clone_count = 0;
+    memset(mock_init_ids, 0, sizeof(mock_init_ids));
+}
 
 /* ------------------------------------------------------------------------- */
 /* rate.c unit coverage (pure, no event loop)                                */
@@ -251,6 +315,101 @@ void test_all_connections_established_multi_thread(void) {
     orchestrator_destroy(o);
 }
 
+/* ------------------------------------------------------------------------- */
+/* Clone / init lifecycle tests (ADR 0005 Phase 5 t070)                     */
+/* ------------------------------------------------------------------------- */
+
+void test_dynamic_off_for_static_script(void) {
+    /* caps = 0 → static workload; all threads share template, dynamic==false. */
+    reset_mock();
+    mock_caps_value = 0;
+
+    script_engine *tmpl = mock_create(NULL);
+    orchestrator_cfg cfg = {
+        .connections = 4, .threads = 2, .duration_us = 100000, .rate = 100000,
+    };
+    orchestrator *o = orchestrator_create(cfg, &stub_proto, &mock_api_static, tmpl);
+    TEST_ASSERT_NOT_NULL(o);
+
+    orchestrator_run(o);
+
+    /* No clones: all threads point at the template. */
+    TEST_ASSERT_EQUAL_INT(0, mock_clone_count);
+    orchestrator_destroy(o);
+    mock_destroy(tmpl);
+}
+
+void test_dynamic_on_clones_per_thread(void) {
+    /* caps = DYNAMIC_REQUEST → threads 1..N each get a distinct engine. */
+    reset_mock();
+    mock_caps_value = SCRIPT_CAP_DYNAMIC_REQUEST;
+
+    script_engine *tmpl = mock_create(NULL);
+    orchestrator_cfg cfg = {
+        .connections = 4, .threads = 3, .duration_us = 100000, .rate = 100000,
+    };
+    orchestrator *o = orchestrator_create(cfg, &stub_proto, &mock_api_static, tmpl);
+    TEST_ASSERT_NOT_NULL(o);
+
+    /* 3 threads → thread 0 = template, threads 1 and 2 get clones. */
+    TEST_ASSERT_EQUAL_INT(2, mock_clone_count);
+
+    orchestrator_run(o);
+    orchestrator_destroy(o);
+    mock_destroy(tmpl);
+}
+
+void test_template_init_runs_once(void) {
+    /* Static workload: init() called exactly once, on the template, thread_id 0. */
+    reset_mock();
+    mock_caps_value = 0;
+
+    script_engine *tmpl = mock_create(NULL);
+    orchestrator_cfg cfg = {
+        .connections = 2, .threads = 2, .duration_us = 100000, .rate = 100000,
+    };
+    orchestrator *o = orchestrator_create(cfg, &stub_proto, &mock_api_static, tmpl);
+    TEST_ASSERT_NOT_NULL(o);
+
+    orchestrator_run(o);
+
+    TEST_ASSERT_EQUAL_INT(1, mock_init_count);
+    TEST_ASSERT_EQUAL_UINT64(0, mock_init_ids[0]);
+
+    orchestrator_destroy(o);
+    mock_destroy(tmpl);
+}
+
+void test_clone_init_per_thread(void) {
+    /* Dynamic workload: template init'd with thread_id 0; each clone init'd
+     * with its own thread_id; template never re-init'd. */
+    reset_mock();
+    mock_caps_value = SCRIPT_CAP_DYNAMIC_REQUEST;
+
+    script_engine *tmpl = mock_create(NULL);
+    orchestrator_cfg cfg = {
+        .connections = 3, .threads = 3, .duration_us = 100000, .rate = 100000,
+    };
+    orchestrator *o = orchestrator_create(cfg, &stub_proto, &mock_api_static, tmpl);
+    TEST_ASSERT_NOT_NULL(o);
+    /* 2 clones created at orchestrator_create time. */
+    TEST_ASSERT_EQUAL_INT(2, mock_clone_count);
+
+    orchestrator_run(o);
+
+    /* init() must have been called 3 times: once for template (id=0), once per
+     * clone (id=1, id=2). */
+    TEST_ASSERT_EQUAL_INT(3, mock_init_count);
+    TEST_ASSERT_EQUAL_UINT64(0, mock_init_ids[0]);
+    /* ids 1 and 2 in some order for threads 1 and 2 */
+    TEST_ASSERT_TRUE(mock_init_ids[1] == 1 || mock_init_ids[1] == 2);
+    TEST_ASSERT_TRUE(mock_init_ids[2] == 1 || mock_init_ids[2] == 2);
+    TEST_ASSERT_NOT_EQUAL(mock_init_ids[1], mock_init_ids[2]);
+
+    orchestrator_destroy(o);
+    mock_destroy(tmpl);
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_rate_init_defaults);
@@ -263,5 +422,11 @@ int main(void) {
     RUN_TEST(test_run_drives_protocol_and_collects);
     RUN_TEST(test_collect_null_safe);
     RUN_TEST(test_all_connections_established_multi_thread);
+
+    RUN_TEST(test_dynamic_off_for_static_script);
+    RUN_TEST(test_dynamic_on_clones_per_thread);
+    RUN_TEST(test_template_init_runs_once);
+    RUN_TEST(test_clone_init_per_thread);
+
     return UNITY_END();
 }

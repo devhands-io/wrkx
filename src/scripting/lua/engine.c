@@ -29,10 +29,23 @@
  * Engine state
  * ---------------------------------------------------------------------- */
 
+struct helper_set {
+    char              *ns;
+    const script_helper *helpers;
+    size_t              count;
+};
+
 struct script_engine {
     lua_State *L;
     char      *request_buf;   /* reused scratch buffer for request() */
     size_t     request_cap;
+    /* replay inputs for clone() */
+    char      *path;
+    char      *url;
+    char     **headers;
+    size_t     n_headers;
+    struct helper_set *helper_sets;
+    size_t             n_helper_sets;
 };
 
 /* -------------------------------------------------------------------------
@@ -108,6 +121,18 @@ void lua_register_helpers(script_engine       *engine,
     if (engine == NULL || engine->L == NULL || ns == NULL) return;
     lua_State *L = engine->L;
 
+    /* Record for clone() replay. The helpers pointer itself is stable (static
+     * table in the extension); only the namespace string needs copying. */
+    struct helper_set *sets = realloc(engine->helper_sets,
+                                      (engine->n_helper_sets + 1) * sizeof(*sets));
+    if (sets) {
+        engine->helper_sets = sets;
+        sets[engine->n_helper_sets].ns      = strdup(ns);
+        sets[engine->n_helper_sets].helpers = helpers;
+        sets[engine->n_helper_sets].count   = count;
+        engine->n_helper_sets++;
+    }
+
     /* Namespace table: reuse an existing global of the same name, else create
      * one. Helpers land as ns.<name> = closure. */
     lua_getglobal(L, ns);
@@ -143,6 +168,8 @@ static script_engine *lua_create(const char *file) {
         free(engine);
         return NULL;
     }
+    if (file != NULL)
+        engine->path = strdup(file);
     return engine;
 }
 
@@ -167,6 +194,22 @@ static int lua_configure(script_engine *engine, const char *url,
                          const char * const *headers, size_t n_headers) {
     if (engine == NULL || engine->L == NULL) return -1;
     lua_State *L = engine->L;
+
+    /* Record for clone() replay. */
+    free(engine->url);
+    engine->url = url ? strdup(url) : NULL;
+    if (n_headers > 0 && headers != NULL) {
+        for (size_t i = 0; i < engine->n_headers; i++) free(engine->headers[i]);
+        free(engine->headers);
+        engine->headers = calloc(n_headers, sizeof(char *));
+        engine->n_headers = 0;
+        if (engine->headers) {
+            for (size_t i = 0; i < n_headers; i++) {
+                engine->headers[i] = headers[i] ? strdup(headers[i]) : NULL;
+                engine->n_headers++;
+            }
+        }
+    }
 
     /* --- URL fields ---------------------------------------------------- */
     if (url != NULL) {
@@ -397,10 +440,31 @@ static void lua_done(script_engine *engine, struct orchestrator_stats *stats) {
     }
 }
 
+static script_engine *lua_clone(script_engine *src) {
+    if (src == NULL) return NULL;
+    script_engine *e = lua_create(src->path);          /* step 1 (NULL-safe) */
+    if (e == NULL) return NULL;
+    for (size_t i = 0; i < src->n_helper_sets; i++)    /* step 2 */
+        lua_register_helpers(e, src->helper_sets[i].ns,
+                             src->helper_sets[i].helpers,
+                             src->helper_sets[i].count);
+    if (src->url || src->n_headers)                    /* step 3 */
+        lua_configure(e, src->url,
+                      (const char * const *) src->headers, src->n_headers);
+    return e;
+}
+
 static void lua_destroy(script_engine *engine) {
     if (engine == NULL) return;
     if (engine->L != NULL) lua_close(engine->L);
     free(engine->request_buf);
+    free(engine->path);
+    free(engine->url);
+    for (size_t i = 0; i < engine->n_headers; i++) free(engine->headers[i]);
+    free(engine->headers);
+    for (size_t i = 0; i < engine->n_helper_sets; i++)
+        free(engine->helper_sets[i].ns);
+    free(engine->helper_sets);
     free(engine);
 }
 
@@ -410,6 +474,7 @@ static script_api lua_api = {
     .configure        = lua_configure,   /* ADR 0002 Decision 3 */
     .capabilities     = lua_capabilities,/* ADR 0005 Phase 5 t069 */
     .register_helpers = lua_register_helpers,
+    .clone            = lua_clone,       /* ADR 0005 Phase 5 t070 */
     .init             = lua_init,
     .request          = lua_request,
     .response         = lua_response,

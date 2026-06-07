@@ -60,6 +60,12 @@ typedef struct script_api {
     void (*register_helpers)(script_engine *, const char *ns,
                              const script_helper *helpers, size_t count);
 
+    /* Return an independent engine equivalent to `src` AFTER create +
+     * register_helpers + configure but BEFORE init(). Called once per worker
+     * thread (thread 0 reuses the template). NULL ⇒ engine is not clonable;
+     * caller falls back to static mode. */
+    script_engine *(*clone)(script_engine *src);
+
     /* Called once per thread before any requests. */
     void (*init)(script_engine *, uint64_t thread_id, uint64_t connections);
 

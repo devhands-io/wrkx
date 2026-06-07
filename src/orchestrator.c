@@ -93,6 +93,7 @@ typedef struct othread {
     script_engine        *engine;          /* this thread's engine instance     */
     oconn                *cs;
     bool                  dynamic;          /* re-ask script per request?        */
+    bool                  wants_response;   /* deliver response() callbacks?      */
     const char           *static_request;   /* cached static request bytes       */
     size_t                static_length;
     char                  cal_msg[128];
@@ -173,7 +174,7 @@ static void ask_request(othread *t, oconn *c) {
 static void tell_response(othread *t, int status, size_t bytes,
                           uint64_t latency_us) {
     const script_api *api = engine_api(t->orch);
-    if (t->dynamic && api && api->response && t->engine)
+    if (t->wants_response && api && api->response && t->engine)
         api->response(t->engine, status, bytes, latency_us);
 }
 
@@ -454,6 +455,16 @@ static void *thread_main(void *arg) {
         t->static_length  = o->static_request_len;
     }
 
+    /* Per-clone init (dynamic mode only). Thread 0 reuses the template engine
+     * which was already init'd in orchestrator_run(); clones get their own init
+     * with the real thread_id. Never re-init the template (t->engine == o->engine
+     * for thread 0 and for any clone-fallback). */
+    if (t->dynamic && t->engine != o->engine) {
+        const script_api *api = engine_api(o);
+        if (api && api->init && t->engine)
+            api->init(t->engine, t->id, t->connections);
+    }
+
     for (uint64_t i = 0; i < t->connections; i++) {
         oconn *c = &t->cs[i];
         memset(c, 0, sizeof(*c));
@@ -676,16 +687,28 @@ orchestrator *orchestrator_create(orchestrator_cfg cfg,
     if (per_thread_conns == 0) per_thread_conns = 1;
     double throughput_per_thread = (double)cfg.rate / cfg.threads;
 
+    uint32_t caps = (api && api->capabilities && engine)
+                  ? api->capabilities(engine) : 0;
+    bool dyn = (caps & SCRIPT_CAP_DYNAMIC_REQUEST) != 0;
+
     for (uint64_t i = 0; i < cfg.threads; i++) {
         othread *t = &o->threads[i];
         t->orch        = o;
         t->id          = i;
         t->connections = per_thread_conns;
-        /* per-connection throughput in requests/usec */
         t->throughput  = (throughput_per_thread / 1000000.0) / per_thread_conns;
-        t->engine      = engine; /* template; real wiring clones per thread   */
-        t->dynamic     = false;
-        t->cs          = calloc(per_thread_conns, sizeof(oconn));
+
+        if (i == 0 || !dyn || !api || !api->clone) {
+            t->engine = engine;
+        } else {
+            t->engine = api->clone(engine);
+            if (!t->engine) { t->engine = engine; dyn = false; }
+        }
+
+        t->dynamic        = dyn;
+        t->wants_response = dyn && (caps & SCRIPT_CAP_RESPONSE_HOOK) != 0;
+
+        t->cs = calloc(per_thread_conns, sizeof(oconn));
         if (!t->cs) {
             orchestrator_destroy(o);
             return NULL;
@@ -710,12 +733,23 @@ int orchestrator_run(orchestrator *o) {
     sigfillset(&sa.sa_mask);
     sigaction(SIGINT, &sa, NULL);
 
+    /* Init the template engine (thread 0, connections = per-thread split).
+     * Must run before static pre-generation: request() in Lua may depend on
+     * state set by wrk.init (called inside api->init). Per-clone init runs
+     * in thread_main after clone assignment (deliverable 4a). */
+    uint64_t per_thread_conns_run = o->cfg.connections / o->n_threads;
+    if (per_thread_conns_run == 0) per_thread_conns_run = 1;
+    if (o->api && o->api->init && o->engine)
+        o->api->init(o->engine, 0, per_thread_conns_run);
+
     /* t049-fix: generate the static request buffer once, single-threaded, before
      * any worker is spawned. api->request() calls into the lua_State; calling it
      * from N threads simultaneously is a data race (LuaJIT is not thread-safe)
      * that manifests as an intermittent segfault at calibration startup. Workers
-     * read o->static_request_buf as a read-only pointer — no lock needed. */
-    if (o->api && o->api->request && o->engine) {
+     * read o->static_request_buf as a read-only pointer — no lock needed.
+     * Skip in dynamic mode: each cloned engine generates its own requests. */
+    bool dynamic_workload = o->n_threads > 0 && o->threads[0].dynamic;
+    if (!dynamic_workload && o->api && o->api->request && o->engine) {
         o->static_request_buf = o->api->request(o->engine, &o->static_request_len);
     }
 
@@ -869,6 +903,9 @@ void orchestrator_destroy(orchestrator *o) {
             free(t->cs);
             if (t->latency_histogram)   free(t->latency_histogram);
             if (t->u_latency_histogram) free(t->u_latency_histogram);
+            /* Free per-thread clone engines; skip the template (o->engine). */
+            if (t->engine && t->engine != o->engine && o->api && o->api->destroy)
+                o->api->destroy(t->engine);
         }
         free(o->threads);
     }

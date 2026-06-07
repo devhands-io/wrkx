@@ -335,6 +335,110 @@ void test_engine_tagged_namespace_selection(void) {
 }
 
 /* -------------------------------------------------------------------------
+ * clone (ADR 0005, Phase 5, t070)
+ * ---------------------------------------------------------------------- */
+
+static int counter_helper(void *engine_ctx) {
+    lua_State *L = (lua_State *) engine_ctx;
+    lua_pushinteger(L, 42);
+    return 1;
+}
+
+void test_clone_independent_state(void) {
+    /* A script with a per-call counter. Advance the original; the clone must
+     * not be affected (distinct lua_State). */
+    const char *path = write_script(
+        "n = 0\n"
+        "function request()\n"
+        "    n = n + 1\n"
+        "    return tostring(n)\n"
+        "end\n");
+    script_api *api = lua_script_api();
+    script_engine *orig = api->create(path);
+    TEST_ASSERT_NOT_NULL(api->clone);
+    script_engine *cloned = api->clone(orig);
+    TEST_ASSERT_NOT_NULL(cloned);
+
+    api->init(orig,   0, 1);
+    api->init(cloned, 1, 1);
+
+    /* Advance original three times. */
+    for (int i = 0; i < 3; i++) { free(api->request(orig, NULL)); }
+
+    /* Clone counter must still be at 0 (not yet called). */
+    lua_State *Lc = (lua_State *) lua_engine_state(cloned);
+    lua_getglobal(Lc, "n");
+    TEST_ASSERT_EQUAL_INT(0, (int) lua_tonumber(Lc, -1));
+    lua_pop(Lc, 1);
+
+    api->destroy(orig);
+    api->destroy(cloned);
+}
+
+void test_clone_replays_configure(void) {
+    script_api *api = lua_script_api();
+    script_engine *orig = api->create(NULL);
+    api->configure(orig, "http://bench.example.com:9090/api", NULL, 0);
+
+    script_engine *cloned = api->clone(orig);
+    TEST_ASSERT_NOT_NULL(cloned);
+
+    lua_State *Lc = (lua_State *) lua_engine_state(cloned);
+    lua_getglobal(Lc, "wrk");
+    lua_getfield(Lc, -1, "host");
+    TEST_ASSERT_EQUAL_STRING("bench.example.com", lua_tostring(Lc, -1));
+    lua_pop(Lc, 2);
+
+    api->destroy(orig);
+    api->destroy(cloned);
+}
+
+void test_clone_replays_helpers(void) {
+    script_api *api = lua_script_api();
+    script_engine *orig = api->create(NULL);
+    const script_helper helpers[] = { { "probe", counter_helper } };
+    api->register_helpers(orig, "testns", helpers, 1);
+
+    script_engine *cloned = api->clone(orig);
+    TEST_ASSERT_NOT_NULL(cloned);
+
+    api->init(cloned, 0, 1);
+    lua_State *Lc = (lua_State *) lua_engine_state(cloned);
+    TEST_ASSERT_EQUAL_INT(0, luaL_dostring(Lc, "r = testns.probe()"));
+    lua_getglobal(Lc, "r");
+    TEST_ASSERT_EQUAL_INT(42, (int) lua_tointeger(Lc, -1));
+    lua_pop(Lc, 1);
+
+    api->destroy(orig);
+    api->destroy(cloned);
+}
+
+void test_clone_null_script(void) {
+    /* create(NULL) → clone → both produce the default static GET. */
+    script_api *api = lua_script_api();
+    script_engine *orig   = api->create(NULL);
+    script_engine *cloned = api->clone(orig);
+    TEST_ASSERT_NOT_NULL(cloned);
+
+    api->init(orig,   0, 1);
+    api->init(cloned, 1, 1);
+
+    size_t len_o = 0, len_c = 0;
+    char *buf_o = api->request(orig,   &len_o);
+    char *buf_c = api->request(cloned, &len_c);
+
+    TEST_ASSERT_NOT_NULL(buf_o);
+    TEST_ASSERT_NOT_NULL(buf_c);
+    TEST_ASSERT_EQUAL_UINT(len_o, len_c);
+    TEST_ASSERT_EQUAL_MEMORY(buf_o, buf_c, len_o);
+
+    free(buf_o);
+    free(buf_c);
+    api->destroy(orig);
+    api->destroy(cloned);
+}
+
+/* -------------------------------------------------------------------------
  * session store
  * ---------------------------------------------------------------------- */
 
@@ -394,6 +498,11 @@ int main(void) {
 
     RUN_TEST(test_register_helpers_via_vtable);
     RUN_TEST(test_engine_tagged_namespace_selection);
+
+    RUN_TEST(test_clone_independent_state);
+    RUN_TEST(test_clone_replays_configure);
+    RUN_TEST(test_clone_replays_helpers);
+    RUN_TEST(test_clone_null_script);
 
     RUN_TEST(test_session_set_get);
     RUN_TEST(test_session_null_safe);

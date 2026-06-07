@@ -312,7 +312,9 @@ int main(int argc, char **argv) {
                        (size_t) args.n_headers);
     }
 
-    api->init(eng, 0, args.cfg.connections);
+    /* init() is now the orchestrator's responsibility (ADR 0005 t070):
+     * it runs on the template (thread 0) before static pre-generation, and on
+     * each clone after cloning, so every thread gets per-thread init. */
 
     /* ------------------------------------------------------------------
      * 9.  Run.
