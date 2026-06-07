@@ -147,6 +147,110 @@ void test_init_exception_is_safe(void) {
 }
 
 /* -------------------------------------------------------------------------
+ * request hook (t073)
+ * ---------------------------------------------------------------------- */
+
+void test_request_returns_exact_bytes(void) {
+    const char *path = write_script(
+        "function request() { return 'GET / HTTP/1.1\\r\\n\\r\\n'; }\n");
+    script_api *api = quickjs_script_api();
+    script_engine *e = api->create(path);
+    TEST_ASSERT_NOT_NULL(e);
+
+    size_t len = 0;
+    char *buf = api->request(e, &len);
+    TEST_ASSERT_NOT_NULL(buf);
+    TEST_ASSERT_EQUAL_UINT(strlen("GET / HTTP/1.1\r\n\r\n"), len);
+    TEST_ASSERT_EQUAL_MEMORY("GET / HTTP/1.1\r\n\r\n", buf, len);
+
+    free(buf);
+    api->destroy(e);
+}
+
+void test_request_state_persists_across_calls(void) {
+    const char *path = write_script(
+        "var n = 0;\n"
+        "function request() { n++; return String(n); }\n");
+    script_api *api = quickjs_script_api();
+    script_engine *e = api->create(path);
+    TEST_ASSERT_NOT_NULL(e);
+
+    size_t len = 0;
+    char *r1 = api->request(e, &len); TEST_ASSERT_EQUAL_STRING("1", r1); free(r1);
+    char *r2 = api->request(e, &len); TEST_ASSERT_EQUAL_STRING("2", r2); free(r2);
+    char *r3 = api->request(e, &len); TEST_ASSERT_EQUAL_STRING("3", r3); free(r3);
+
+    api->destroy(e);
+}
+
+void test_request_exception_returns_null(void) {
+    const char *path = write_script(
+        "function request() { throw new Error('bad'); }\n");
+    script_api *api = quickjs_script_api();
+    script_engine *e = api->create(path);
+    TEST_ASSERT_NOT_NULL(e);
+
+    size_t len = 99;
+    char *buf = api->request(e, &len);
+    TEST_ASSERT_NULL(buf);
+    TEST_ASSERT_EQUAL_UINT(0, len);
+
+    api->destroy(e);
+}
+
+void test_request_missing_returns_null(void) {
+    /* No request() defined — must return NULL without crash. */
+    script_api *api = quickjs_script_api();
+    script_engine *e = api->create(NULL);
+    TEST_ASSERT_NOT_NULL(e);
+
+    size_t len = 99;
+    char *buf = api->request(e, &len);
+    TEST_ASSERT_NULL(buf);
+    TEST_ASSERT_EQUAL_UINT(0, len);
+
+    api->destroy(e);
+}
+
+/* -------------------------------------------------------------------------
+ * capabilities (t073)
+ * ---------------------------------------------------------------------- */
+
+void test_capabilities_empty_script_is_zero(void) {
+    script_api *api = quickjs_script_api();
+    TEST_ASSERT_NOT_NULL(api->capabilities);
+    script_engine *e = api->create(NULL);
+    TEST_ASSERT_EQUAL_UINT32(0, api->capabilities(e));
+    api->destroy(e);
+}
+
+void test_capabilities_request_only_is_dynamic(void) {
+    const char *path = write_script("function request() { return 'x'; }\n");
+    script_api *api = quickjs_script_api();
+    script_engine *e = api->create(path);
+
+    uint32_t caps = api->capabilities(e);
+    TEST_ASSERT_TRUE(caps & SCRIPT_CAP_DYNAMIC_REQUEST);
+    TEST_ASSERT_FALSE(caps & SCRIPT_CAP_RESPONSE_HOOK);
+
+    api->destroy(e);
+}
+
+void test_capabilities_with_response_sets_both_bits(void) {
+    const char *path = write_script(
+        "function request()  { return 'x'; }\n"
+        "function response() { }\n");
+    script_api *api = quickjs_script_api();
+    script_engine *e = api->create(path);
+
+    uint32_t caps = api->capabilities(e);
+    TEST_ASSERT_TRUE(caps & SCRIPT_CAP_DYNAMIC_REQUEST);
+    TEST_ASSERT_TRUE(caps & SCRIPT_CAP_RESPONSE_HOOK);
+
+    api->destroy(e);
+}
+
+/* -------------------------------------------------------------------------
  * main
  * ---------------------------------------------------------------------- */
 
@@ -163,7 +267,17 @@ int main(void) {
     RUN_TEST(test_init_missing_function_is_safe);
     RUN_TEST(test_init_exception_is_safe);
 
+    RUN_TEST(test_request_returns_exact_bytes);
+    RUN_TEST(test_request_state_persists_across_calls);
+    RUN_TEST(test_request_exception_returns_null);
+    RUN_TEST(test_request_missing_returns_null);
+
+    RUN_TEST(test_capabilities_empty_script_is_zero);
+    RUN_TEST(test_capabilities_request_only_is_dynamic);
+    RUN_TEST(test_capabilities_with_response_sets_both_bits);
+
     return UNITY_END();
 }
+
 
 #endif /* WRKX_HAVE_QUICKJS */

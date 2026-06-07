@@ -67,6 +67,7 @@ static struct option longopts[] = {
     { "rate",          required_argument, NULL, 'R' },
     { "version",       no_argument,       NULL, 'v' },
     { "help",          no_argument,       NULL, 'h' },
+    { "engine",        required_argument, NULL, 'E' },
     { NULL,            0,                 NULL,  0  },
 };
 
@@ -92,6 +93,8 @@ void cli_usage(const char *program) {
         "    -R, --rate        <T>  work rate (throughput)   \n"
         "                           in requests/sec (total)  \n"
         "                           [Required Parameter]     \n"
+        "    -E, --engine      <E>  Scripting engine         \n"
+        "                           lua (default), quickjs   \n"
         "                                                    \n"
         "  Numeric arguments may include a SI unit (1k, 1M, 1G)\n"
         "  Time arguments may include a time unit (2s, 2m, 2h)\n",
@@ -110,12 +113,13 @@ int cli_parse_args(int argc, char **argv, cli_args *out) {
     out->latency         = false;
     out->latency_dist_only = false;
     out->u_latency       = false;
+    out->engine          = NULL;
 
     uint64_t timeout_ms  = 2000;   /* SOCKET_TIMEOUT_MS */
     uint64_t duration_s  = 10;
     int c;
 
-    while ((c = getopt_long(argc, argv, "c:d:t:s:H:LlUT:R:vh?", longopts, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "c:d:t:s:H:LlUT:R:vhE:?", longopts, NULL)) != -1) {
         switch (c) {
             case 'c':
                 if (scan_metric(optarg, &out->cfg.connections)) {
@@ -165,6 +169,9 @@ int cli_parse_args(int argc, char **argv, cli_args *out) {
                     fprintf(stderr, "invalid rate: %s\n", optarg);
                     return -1;
                 }
+                break;
+            case 'E':
+                out->engine = optarg;
                 break;
             case 'v':
                 printf("wrkx %s [%s] ", CLI_VERSION, aeGetApiName());

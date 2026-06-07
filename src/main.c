@@ -31,6 +31,9 @@
 #include "proto/http1.h"
 #include "scripting/lua/engine.h"
 #include "scripting/script_api.h"
+#if WRKX_HAVE_QUICKJS
+#include "scripting/quickjs/engine.h"
+#endif
 #include "scripting/helper_tag.h"
 #include "units.h"
 #include "http_parser.h"
@@ -284,7 +287,19 @@ int main(int argc, char **argv) {
     /* ------------------------------------------------------------------
      * 8.  Build the scripting engine and configure it (ADR 0002 §3).
      * ---------------------------------------------------------------- */
-    script_api    *api = lua_script_api();
+    script_api *api;
+    if (args.engine && strcmp(args.engine, "quickjs") == 0) {
+#if WRKX_HAVE_QUICKJS
+        api = quickjs_script_api();
+#else
+        fprintf(stderr,
+            "wrkx: built without QuickJS support "
+            "(rebuild with ./configure --with-quickjs)\n");
+        return 1;
+#endif
+    } else {
+        api = lua_script_api();
+    }
     script_engine *eng = api->create(args.script);
     if (eng == NULL) {
         fprintf(stderr, "failed to create scripting engine\n");

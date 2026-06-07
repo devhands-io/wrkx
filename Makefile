@@ -39,7 +39,6 @@ QJS_CFLAGS := -I$(QJS_DIR) -DCONFIG_VERSION='"wrkx-vendored"'
 $(QJS_OBJS): CFLAGS += $(QJS_CFLAGS) -Wno-unused-parameter -Wno-sign-compare \
                        -Wno-unused-but-set-variable
 CFLAGS     += -I$(QJS_DIR) -DWRKX_HAVE_QUICKJS=1
-LAYER_SRC  += src/scripting/quickjs/engine.c
 TEST_QJS_ENGINE_SRC  := tests/unit/test_quickjs_engine.c
 TEST_QJS_ENGINE_BIN  := obj/test_quickjs_engine
 QJS_ENGINE_TEST_DEPS := src/scripting/quickjs/engine.c src/http_parser.c
@@ -57,6 +56,9 @@ LAYER_SRC := src/main.c src/cli.c \
              src/scripting/lua/engine.c \
              src/scripting/session.c \
              src/scripting/lua/http1_helpers.c
+ifeq ($(QUICKJS_ENABLED),1)
+LAYER_SRC  += src/scripting/quickjs/engine.c
+endif
 
 COMMON_SRC := src/net.c src/ssl.c src/aprintf.c src/stats.c src/units.c \
               src/ae.c src/zmalloc.c src/http_parser.c \

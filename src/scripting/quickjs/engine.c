@@ -200,6 +200,59 @@ static void qjs_init(script_engine *se, uint64_t thread_id,
     JS_FreeValue(ctx, fn);
 }
 
+static uint32_t qjs_capabilities(script_engine *se) {
+    if (!se) return 0;
+    qjs_engine *e = (qjs_engine *) se;
+    JSContext  *ctx = e->ctx;
+    uint32_t caps = 0;
+
+    JSValue req = JS_GetPropertyStr(ctx, e->global, "request");
+    if (JS_IsFunction(ctx, req)) caps |= SCRIPT_CAP_DYNAMIC_REQUEST;
+    JS_FreeValue(ctx, req);
+
+    JSValue rsp = JS_GetPropertyStr(ctx, e->global, "response");
+    if (JS_IsFunction(ctx, rsp)) caps |= SCRIPT_CAP_RESPONSE_HOOK;
+    JS_FreeValue(ctx, rsp);
+
+    return caps;
+}
+
+static char *qjs_request(script_engine *se, size_t *len_out) {
+    if (len_out) *len_out = 0;
+    if (!se) return NULL;
+    qjs_engine *e = (qjs_engine *) se;
+    JSContext  *ctx = e->ctx;
+
+    JSValue fn = JS_GetPropertyStr(ctx, e->global, "request");
+    if (!JS_IsFunction(ctx, fn)) {
+        JS_FreeValue(ctx, fn);
+        return NULL;
+    }
+    JSValue ret = JS_Call(ctx, fn, e->global, 0, NULL);
+    JS_FreeValue(ctx, fn);
+
+    if (JS_IsException(ret)) {
+        dump_exception(ctx);
+        JS_FreeValue(ctx, ret);
+        return NULL;
+    }
+
+    size_t slen = 0;
+    const char *s = JS_ToCStringLen(ctx, &slen, ret);
+    char *out = NULL;
+    if (s && slen > 0) {
+        out = malloc(slen + 1);   /* +1 for NUL so callers may treat as C string */
+        if (out) {
+            memcpy(out, s, slen);
+            out[slen] = '\0';
+            if (len_out) *len_out = slen;
+        }
+        JS_FreeCString(ctx, s);
+    }
+    JS_FreeValue(ctx, ret);
+    return out;   /* caller frees */
+}
+
 static void qjs_destroy(script_engine *se) {
     if (!se) return;
     qjs_engine *e = (qjs_engine *) se;
@@ -232,12 +285,14 @@ void *qjs_engine_global(script_engine *se) {
  * ---------------------------------------------------------------------- */
 
 static script_api qjs_api = {
-    .name      = "quickjs",
-    .create    = qjs_create,
-    .configure = qjs_configure,
-    .init      = qjs_init,
-    .destroy   = qjs_destroy,
-    /* capabilities, register_helpers, clone, request, response, done: t073-t075 */
+    .name         = "quickjs",
+    .create       = qjs_create,
+    .configure    = qjs_configure,
+    .capabilities = qjs_capabilities,
+    .init         = qjs_init,
+    .request      = qjs_request,
+    .destroy      = qjs_destroy,
+    /* register_helpers, clone, response, done: t074-t075 */
 };
 
 script_api *quickjs_script_api(void) {

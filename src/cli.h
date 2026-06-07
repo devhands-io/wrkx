@@ -29,6 +29,8 @@ typedef struct cli_args {
     bool     latency;           /* -L: print HdrHistogram with full spectrum     */
     bool     latency_dist_only; /* -l: print distribution, no detailed spectrum  */
     bool     u_latency;         /* -U: print uncorrected latency distribution    */
+
+    char    *engine;            /* -E/--engine: scripting engine name (NULL → "lua") */
 } cli_args;
 
 /*
