@@ -363,6 +363,7 @@ test-e2e:
 	@bash tests/e2e/memcached_basic.sh
 	@bash tests/e2e/memcached_set_delete.sh
 	@bash tests/e2e/memcached_counters.sh
+	@bash tests/e2e/memcached_robustness.sh
 # ---------------------------------------------------------------------------
 # ASAN + UBSan unit tests
 # NOTE: the full wrkx binary is NOT instrumented here — LuaJIT's custom

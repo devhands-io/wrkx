@@ -23,6 +23,7 @@ Storage model:
 import sys
 import socket
 import threading
+import argparse
 
 # Shared key→value store (bytes).  Protected by storage_lock.
 _storage      = {}
@@ -145,8 +146,9 @@ def reply_for(cmd):
 # Connection handler
 # ---------------------------------------------------------------------------
 
-def handle_conn(conn, addr):
+def handle_conn(conn, addr, close_after=0, bad_reply=False):
     buf = b""
+    cmd_count = 0
     try:
         while True:
             chunk = conn.recv(4096)
@@ -159,7 +161,13 @@ def handle_conn(conn, addr):
                 if cmd is None:
                     break   # incomplete — wait for more data
                 buf = buf[consumed:]
-                conn.sendall(reply_for(cmd))
+                cmd_count += 1
+                if bad_reply:
+                    conn.sendall(b"JUNK_NOT_VALID_REPLY\r\n")
+                else:
+                    conn.sendall(reply_for(cmd))
+                if close_after > 0 and cmd_count >= close_after:
+                    return  # force close after N commands
     except (OSError, BrokenPipeError):
         pass
     finally:
@@ -174,15 +182,17 @@ def handle_conn(conn, addr):
 # ---------------------------------------------------------------------------
 
 def main():
-    if len(sys.argv) < 2:
-        print(f"Usage: {sys.argv[0]} <port>", file=sys.stderr)
-        sys.exit(1)
-
-    port = int(sys.argv[1])
+    parser = argparse.ArgumentParser(description="memcached mock server for wrkx E2E tests")
+    parser.add_argument("port", type=int, help="TCP port to listen on")
+    parser.add_argument("--close-after", type=int, default=0, metavar="N",
+                        help="close each connection after N commands (0 = never)")
+    parser.add_argument("--bad-reply", action="store_true",
+                        help="send malformed replies to all commands")
+    args = parser.parse_args()
 
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    srv.bind(("127.0.0.1", port))
+    srv.bind(("127.0.0.1", args.port))
     srv.listen(128)
 
     while True:
@@ -190,7 +200,11 @@ def main():
             conn, addr = srv.accept()
         except OSError:
             break
-        t = threading.Thread(target=handle_conn, args=(conn, addr), daemon=True)
+        t = threading.Thread(
+            target=handle_conn,
+            args=(conn, addr, args.close_after, args.bad_reply),
+            daemon=True,
+        )
         t.start()
 
 

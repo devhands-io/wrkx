@@ -50,7 +50,6 @@ typedef struct {
     char      rbuf[MC_RECVBUF];
     size_t    rbuf_len;
     int       done;
-    int       error;
     size_t    bytes;
 } mc_state;
 
@@ -105,10 +104,9 @@ static int memcached_write(connection *c, const char *buf, size_t len) {
     }
 
     /* Reset per-request state on each new write cycle. */
-    if (s->done || s->error) {
+    if (s->done) {
         s->rbuf_len = 0;
         s->done     = 0;
-        s->error    = 0;
         s->bytes    = 0;
     }
 
@@ -153,7 +151,12 @@ static proto_status memcached_readable(connection *c) {
     size_t    consumed = 0;
     mc_status ps = mc_parse_reply(s->rbuf, s->rbuf_len, &reply, &consumed);
 
-    if (ps == MC_STATUS_PENDING) return PROTO_PENDING;
+    if (ps == MC_STATUS_PENDING) {
+        /* Buffer full with no complete reply — can't make progress. */
+        if (s->rbuf_len == sizeof(s->rbuf))
+            return PROTO_ERROR;
+        return PROTO_PENDING;
+    }
     if (ps == MC_STATUS_ERROR)   return PROTO_ERROR;
 
     /* Consume bytes from the front of the buffer. */
