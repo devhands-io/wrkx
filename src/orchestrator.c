@@ -24,6 +24,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <sched.h>
+#include <sys/resource.h>
 
 #include "orchestrator.h"
 #include "proto/proto.h"
@@ -782,6 +783,29 @@ int orchestrator_run(orchestrator *o) {
     if (!dynamic_workload && o->api && o->api->request && o->engine) {
         o->static_request_buf = o->api->request(o->engine, &o->static_request_len);
     }
+
+    /* Warn if the per-process fd limit is too low to open all requested sockets.
+     * Each connection needs 1 fd; the process itself uses a handful (stdin/out/err,
+     * kqueue/epoll, pipes, etc.).  Reserve FD_OVERHEAD for those. */
+#define FD_OVERHEAD 16
+    {
+        struct rlimit rl;
+        if (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY) {
+            uint64_t available = rl.rlim_cur > FD_OVERHEAD
+                                 ? rl.rlim_cur - FD_OVERHEAD : 0;
+            if (o->cfg.connections > available) {
+                fprintf(stderr,
+                    "Warning: %llu connections requested but fd limit is %llu "
+                    "(ulimit -n).  Up to %llu connections will fail with EMFILE "
+                    "and be permanently idle.  Run: ulimit -n %llu\n",
+                    (unsigned long long)o->cfg.connections,
+                    (unsigned long long)rl.rlim_cur,
+                    (unsigned long long)(o->cfg.connections - available),
+                    (unsigned long long)(o->cfg.connections + FD_OVERHEAD));
+            }
+        }
+    }
+#undef FD_OVERHEAD
 
     oprg_arg parg = { o, stop_at, 0 };
     pthread_t progress_thread;
