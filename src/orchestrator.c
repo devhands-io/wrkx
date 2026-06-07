@@ -720,7 +720,7 @@ static void *progress_main(void *raw) {
         double   pct    = (double)elapsed / (double)total_us;
         int      filled = (int)(pct * bar_width);
         uint64_t el_s   = elapsed  / 1000000;
-        uint64_t tot_s  = total_us / 1000000;
+        uint64_t tot_s  = (total_us + 999999) / 1000000;
 
         printf("\r  Progress: [");
         for (int i = 0; i < bar_width; i++) {
