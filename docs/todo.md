@@ -6,3 +6,4 @@ TODO wrkx
 • more debug-like counters like reconnects, keepalive or not keepalive, ae/even engine counters (events)
 • json-like output to use in automation
 • human-readable summary on anomalies
+• other areas of improvements: performance, more protocol extensions, CI improvements. Gates A-? - agent wanted to refactor this piece. 
