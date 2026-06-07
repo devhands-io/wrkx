@@ -75,17 +75,11 @@ jobs:
     name: Build & Test (Linux)
     runs-on: ubuntu-latest
 
-    services:
-      memcached:
-        image: memcached:alpine
-        ports:
-          - 11211:11211
-
     steps:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: sudo apt-get update -q && sudo apt-get install -y libssl-dev bc
+        run: sudo apt-get update -q && sudo apt-get install -y libssl-dev bc memcached
 
       - name: Configure
         run: ./configure
@@ -118,4 +112,9 @@ jobs:
         run: make clean && make EXTENSIONS= && ./wrkx -t1 -c1 -d1s -R1 redis://localhost:9 2>&1 | grep -q 'no extension provides'
 
       - name: Extension build (memcached) — real service E2E (Linux)
-        run: make clean && make EXTENSIONS=memcached && bash tests/e2e/memcached_real.sh
+        run: |
+          memcached -d -p 11211 -l 127.0.0.1
+          sleep 0.3
+          make clean && make EXTENSIONS=memcached
+          bash tests/e2e/memcached_real.sh
+          pkill memcached || true
