@@ -5,15 +5,28 @@ Minimal memcached text-protocol mock server for wrkx E2E tests (ADR 0005, P4-1).
 Usage: python3 memcached_mock_server.py <port>
 
 Accepts TCP connections and speaks the memcached text protocol.
-Canned replies — no real storage.  Handles pipelining (multiple commands
-arriving in one recv()).  Supports get, set, delete, incr, decr.
+Handles pipelining (multiple commands arriving in one recv()).
+Supports get, set, delete, incr, decr.
 
-GET always returns a cache hit so the full VALUE…END parse path is exercised.
+Storage model:
+  SET stores the raw data bytes, keyed by name.
+  INCR / DECR operate on keys whose stored value is a decimal integer; they
+  return NOT_FOUND when the key is absent and CLIENT_ERROR when the value is
+  not numeric.  This lets counter E2E tests verify both the happy path and the
+  missing-key error path.
+  DELETE removes the key; returns DELETED unconditionally (avoids NOT_FOUND
+  churn in set/delete workloads that may race across connections).
+  GET always returns a canned VALUE hit so the full VALUE…END parse path is
+  exercised regardless of stored state.
 """
 
 import sys
 import socket
 import threading
+
+# Shared key→value store (bytes).  Protected by storage_lock.
+_storage      = {}
+_storage_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -53,12 +66,14 @@ def parse_command(buf):
         return {"name": "delete", "key": key}, crlf + 2
 
     if name == "incr":
-        key = parts[1] if len(parts) > 1 else ""
-        return {"name": "incr", "key": key}, crlf + 2
+        key   = parts[1] if len(parts) > 1 else ""
+        delta = int(parts[2]) if len(parts) > 2 else 1
+        return {"name": "incr", "key": key, "delta": delta}, crlf + 2
 
     if name == "decr":
-        key = parts[1] if len(parts) > 1 else ""
-        return {"name": "decr", "key": key}, crlf + 2
+        key   = parts[1] if len(parts) > 1 else ""
+        delta = int(parts[2]) if len(parts) > 2 else 1
+        return {"name": "decr", "key": key, "delta": delta}, crlf + 2
 
     if name == "set":
         # set <key> <flags> <exptime> <bytes> [noreply]\r\n<data>\r\n
@@ -76,19 +91,53 @@ def parse_command(buf):
 
 
 def reply_for(cmd):
-    """Return the canned bytes reply for a parsed command dict."""
+    """Return the reply bytes for a parsed command dict."""
     name = cmd["name"]
+
     if name == "get":
-        key = cmd.get("key", "k").encode()
+        # Always return a cache hit — GET tests don't care about stored state.
+        key = cmd.get("key", "k").encode("ascii")
         return b"VALUE " + key + b" 0 5\r\nvalue\r\nEND\r\n"
+
     if name == "set":
+        key  = cmd.get("key", "")
+        data = cmd.get("data", b"")
+        with _storage_lock:
+            _storage[key] = data
         return b"STORED\r\n"
+
     if name == "delete":
+        key = cmd.get("key", "")
+        with _storage_lock:
+            _storage.pop(key, None)
         return b"DELETED\r\n"
+
     if name == "incr":
-        return b"1\r\n"
+        key   = cmd.get("key", "")
+        delta = cmd.get("delta", 1)
+        with _storage_lock:
+            if key not in _storage:
+                return b"NOT_FOUND\r\n"
+            try:
+                val = int(_storage[key]) + delta
+            except (ValueError, TypeError):
+                return b"CLIENT_ERROR cannot increment non-numeric value\r\n"
+            _storage[key] = str(val).encode("ascii")
+        return str(val).encode("ascii") + b"\r\n"
+
     if name == "decr":
-        return b"0\r\n"
+        key   = cmd.get("key", "")
+        delta = cmd.get("delta", 1)
+        with _storage_lock:
+            if key not in _storage:
+                return b"NOT_FOUND\r\n"
+            try:
+                val = max(0, int(_storage[key]) - delta)
+            except (ValueError, TypeError):
+                return b"CLIENT_ERROR cannot decrement non-numeric value\r\n"
+            _storage[key] = str(val).encode("ascii")
+        return str(val).encode("ascii") + b"\r\n"
+
     return b"ERROR\r\n"
 
 
