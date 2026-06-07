@@ -15,7 +15,7 @@
 
 #include "orchestrator.h"
 
-#define CLI_VERSION       "0.1.4"
+#define CLI_VERSION       "0.1.5"
 #define CLI_MAX_HEADERS   64
 
 typedef struct cli_args {
