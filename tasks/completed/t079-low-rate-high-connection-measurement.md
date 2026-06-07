@@ -1,5 +1,6 @@
 title: investigate: -R1 -c400 gives 4 measurement requests instead of ~18
-status: open
+status: completed
+commit: e50d0ab
 
 ## Observed
 
