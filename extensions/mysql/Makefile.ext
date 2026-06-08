@@ -1,6 +1,7 @@
 EXT_SRCS     += extensions/mysql/mysql.c \
                 extensions/mysql/mysql_packet.c \
                 extensions/mysql/mysql_lua_helpers.c \
+                extensions/mysql/mysql_quickjs_helpers.c \
                 extensions/mysql/init.c
 EXT_INIT_FNS += wrkx_extension_init_mysql
 EXT_CFLAGS   += -Iextensions/mysql

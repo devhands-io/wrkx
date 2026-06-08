@@ -30,6 +30,11 @@
      MYSQL_CLIENT_CONNECT_WITH_DB | MYSQL_CLIENT_PROTOCOL_41 | \
      MYSQL_CLIENT_SECURE_CONN | MYSQL_CLIENT_PLUGIN_AUTH)
 
+/* Maximum SQL length for a prepared statement.  The per-connection stmt cache
+   stores the SQL in a fixed buffer of this size plus a NUL terminator.
+   Enforced by both the scripting helpers (Lua/QuickJS) and mysql_write(). */
+#define MYSQL_MAX_PREPARED_SQL 1023
+
 /* -------------------------------------------------------------------------
  * Packet-type discriminator
  * ---------------------------------------------------------------------- */
@@ -45,6 +50,8 @@ typedef enum {
     MYSQL_PKT_COLUMN_COUNT,     /* LEI > 0; result-set column count          */
     MYSQL_PKT_COLUMN_DEF,       /* catalog/db/table/name column descriptor   */
     MYSQL_PKT_ROW,              /* raw text row                              */
+    MYSQL_PKT_STMT_PREPARE_OK,  /* 0x00 in STMT_PREPARE response context     */
+    MYSQL_PKT_BINARY_ROW,       /* COM_STMT_EXECUTE result row                */
 } mysql_pkt_type;
 
 /* -------------------------------------------------------------------------
@@ -97,6 +104,12 @@ typedef struct mysql_parsed_pkt {
             uint16_t warnings;
             uint16_t status_flags;
         } eof;
+        struct {
+            uint32_t stmt_id;
+            uint16_t n_columns;
+            uint16_t n_params;
+            uint16_t warning_count;
+        } stmt_prepare_ok;
     };
 } mysql_parsed_pkt;
 
@@ -108,10 +121,12 @@ typedef struct mysql_parsed_pkt {
  * ---------------------------------------------------------------------- */
 
 typedef enum {
-    MYSQL_CTX_AUTH,     /* connect() handshake loop: 0x01 → AUTH_MORE_DATA  */
-    MYSQL_CTX_GENERIC,  /* readable() preamble: 0x01 → COLUMN_COUNT(1)      */
-    MYSQL_CTX_COL_DEF,  /* column definition packets                         */
-    MYSQL_CTX_ROW,      /* row data packets                                  */
+    MYSQL_CTX_AUTH,         /* connect() handshake loop: 0x01 → AUTH_MORE_DATA  */
+    MYSQL_CTX_GENERIC,      /* readable() preamble: 0x01 → COLUMN_COUNT(1)      */
+    MYSQL_CTX_COL_DEF,      /* column definition packets                         */
+    MYSQL_CTX_ROW,          /* row data packets                                  */
+    MYSQL_CTX_STMT_PREPARE, /* resolves 0x00 → STMT_PREPARE_OK                  */
+    MYSQL_CTX_BINARY_ROW,   /* resolves non-0xfe/0xff → BINARY_ROW               */
 } mysql_ctx;
 
 /* -------------------------------------------------------------------------
@@ -169,6 +184,42 @@ int mysql_encode_com_query(uint8_t *buf, size_t cap,
 
 /* COM_QUIT (seq=0). */
 int mysql_encode_com_quit(uint8_t *buf, size_t cap);
+
+/* COM_STMT_PREPARE (seq=0, cmd=0x16). */
+int mysql_encode_com_stmt_prepare(uint8_t *buf, size_t cap,
+                                  const char *sql, size_t sql_len);
+
+/* COM_STMT_EXECUTE (seq=0, cmd=0x17).
+ * Text-mode params only (all MYSQL_TYPE_VAR_STRING / 0x00fd).
+ * params[i] == NULL → NULL param; param_lens[i] is ignored for NULL.
+ * Returns 0 if buffer is too small or n_params > 127. */
+int mysql_encode_com_stmt_execute(uint8_t *buf, size_t cap,
+                                  uint32_t stmt_id,
+                                  const char **params,
+                                  const size_t *param_lens,
+                                  int n_params);
+
+/* COM_STMT_CLOSE (seq=0, cmd=0x19, no server response). */
+int mysql_encode_com_stmt_close(uint8_t *buf, size_t cap, uint32_t stmt_id);
+
+/* Produce the internal "prepared execute" blob (not MySQL wire).
+ * Same param conventions as mysql_encode_com_stmt_execute. */
+int mysql_encode_prepared_request(uint8_t *buf, size_t cap,
+                                  const char *sql, size_t sql_len,
+                                  const char **params,
+                                  const size_t *param_lens,
+                                  int n_params);
+
+/* Returns 1 if buf[0..3] == the prepared-request magic, 0 otherwise. */
+int mysql_is_prepared_request(const uint8_t *buf, size_t len);
+
+/* Decode params from a prepared-request blob (internal format).
+   Fills params[], param_lens[], *n_params.  params[i]==NULL for NULL entries.
+   String values point into blob memory (zero-copy).
+   Returns 0 on success, -1 if blob is malformed. */
+int mysql_decode_prepared_request_params(const uint8_t *blob, size_t blob_len,
+                                         const char **params,
+                                         size_t *param_lens, int *n_params);
 
 /* -------------------------------------------------------------------------
  * Auth response helpers

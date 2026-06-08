@@ -24,6 +24,7 @@
 #include "scripting/script_api.h"
 #include "scripting/lua/engine.h"
 #include "mysql_lua_helpers.h"
+#include "mysql_packet.h"
 
 /* -------------------------------------------------------------------------
  * Fixture
@@ -133,6 +134,139 @@ void test_mysql_query_too_large_errors(void) {
 }
 
 /* -------------------------------------------------------------------------
+ * mysql.execute tests
+ * ---------------------------------------------------------------------- */
+
+static void decode_blob(const char *blob, size_t blen,
+                        const char **params, size_t *lens, int *np) {
+    int rc = mysql_decode_prepared_request_params(
+                 (const uint8_t *)blob, blen, params, lens, np);
+    TEST_ASSERT_EQUAL_INT(0, rc);
+}
+
+void test_mysql_execute_no_params(void) {
+    size_t len;
+    const char *s = run_and_get_str("return mysql.execute('SELECT 1')", &len);
+    TEST_ASSERT_NOT_NULL(s);
+    TEST_ASSERT_EQUAL_INT(1,
+        mysql_is_prepared_request((const uint8_t *)s, len));
+    const char *params[128]; size_t plens[128]; int np;
+    decode_blob(s, len, params, plens, &np);
+    TEST_ASSERT_EQUAL_INT(0, np);
+}
+
+void test_mysql_execute_with_string_param(void) {
+    size_t len;
+    const char *s = run_and_get_str(
+        "return mysql.execute('SELECT ?', 'hello')", &len);
+    TEST_ASSERT_NOT_NULL(s);
+    const char *params[128]; size_t plens[128]; int np;
+    decode_blob(s, len, params, plens, &np);
+    TEST_ASSERT_EQUAL_INT(1, np);
+    TEST_ASSERT_NOT_NULL(params[0]);
+    TEST_ASSERT_EQUAL_size_t(5, plens[0]);
+    TEST_ASSERT_EQUAL_MEMORY("hello", params[0], 5);
+}
+
+void test_mysql_execute_with_number_param(void) {
+    size_t len;
+    const char *s = run_and_get_str(
+        "return mysql.execute('SELECT ?', 42)", &len);
+    TEST_ASSERT_NOT_NULL(s);
+    const char *params[128]; size_t plens[128]; int np;
+    decode_blob(s, len, params, plens, &np);
+    TEST_ASSERT_EQUAL_INT(1, np);
+    TEST_ASSERT_NOT_NULL(params[0]);
+    /* lua_tolstring coerces 42 → "42" */
+    TEST_ASSERT_EQUAL_size_t(2, plens[0]);
+    TEST_ASSERT_EQUAL_MEMORY("42", params[0], 2);
+}
+
+void test_mysql_execute_with_null_param(void) {
+    size_t len;
+    const char *s = run_and_get_str(
+        "return mysql.execute('SELECT ?', nil)", &len);
+    TEST_ASSERT_NOT_NULL(s);
+    const char *params[128]; size_t plens[128]; int np;
+    decode_blob(s, len, params, plens, &np);
+    TEST_ASSERT_EQUAL_INT(1, np);
+    TEST_ASSERT_NULL(params[0]);
+}
+
+void test_mysql_execute_from_prepare_handle(void) {
+    size_t len;
+    const char *s = run_and_get_str(
+        "local h = mysql.prepare('SELECT ?') "
+        "return mysql.execute(h, 'x')", &len);
+    TEST_ASSERT_NOT_NULL(s);
+    const char *params[128]; size_t plens[128]; int np;
+    decode_blob(s, len, params, plens, &np);
+    TEST_ASSERT_EQUAL_INT(1, np);
+    TEST_ASSERT_NOT_NULL(params[0]);
+    TEST_ASSERT_EQUAL_size_t(1, plens[0]);
+    TEST_ASSERT_EQUAL_MEMORY("x", params[0], 1);
+}
+
+void test_mysql_execute_wrong_type_errors(void) {
+    lua_settop(L, 0);
+    int rc = run_chunk("return mysql.execute(42)");
+    TEST_ASSERT_NOT_EQUAL(LUA_OK, rc);
+}
+
+void test_mysql_execute_too_many_params(void) {
+    /* Build a call with 128 parameters (max is 127) */
+    lua_settop(L, 0);
+    /* Use a loop to create the call */
+    int rc = run_chunk(
+        "local args = {}\n"
+        "for i = 1, 128 do args[i] = 'x' end\n"
+        "return mysql.execute('SELECT 1', table.unpack(args))");
+    TEST_ASSERT_NOT_EQUAL(LUA_OK, rc);
+}
+
+void test_mysql_execute_sql_at_limit(void) {
+    /* 1023 bytes — exactly at the limit, must succeed */
+    size_t len;
+    const char *s = run_and_get_str(
+        "return mysql.execute(string.rep('x', 1023))", &len);
+    TEST_ASSERT_NOT_NULL(s);
+    TEST_ASSERT_EQUAL_INT(1,
+        mysql_is_prepared_request((const uint8_t *)s, len));
+}
+
+void test_mysql_execute_sql_over_limit(void) {
+    /* 1024 bytes — one over the limit, must error */
+    lua_settop(L, 0);
+    int rc = run_chunk("return mysql.execute(string.rep('x', 1024))");
+    TEST_ASSERT_NOT_EQUAL(LUA_OK, rc);
+    /* Error message should mention the limit */
+    const char *errmsg = lua_tostring(L, -1);
+    TEST_ASSERT_NOT_NULL(errmsg);
+    TEST_ASSERT_NOT_NULL(strstr(errmsg, "SQL exceeds"));
+}
+
+void test_mysql_prepare_still_works(void) {
+    lua_settop(L, 0);
+    int rc = run_chunk("local h = mysql.prepare('SELECT 1') "
+                       "return h.sql");
+    TEST_ASSERT_EQUAL_INT(LUA_OK, rc);
+    TEST_ASSERT_EQUAL_INT(LUA_TSTRING, lua_type(L, -1));
+    size_t len;
+    const char *sql = lua_tolstring(L, -1, &len);
+    TEST_ASSERT_EQUAL_MEMORY("SELECT 1", sql, 8);
+}
+
+void test_mysql_query_still_works(void) {
+    size_t len;
+    const char *s = run_and_get_str("return mysql.query('SELECT 1')", &len);
+    TEST_ASSERT_NOT_NULL(s);
+    /* COM_QUERY: byte[4] = 0x03, NOT a prepared blob */
+    TEST_ASSERT_EQUAL_UINT8(0x03, (uint8_t)s[4]);
+    TEST_ASSERT_EQUAL_INT(0,
+        mysql_is_prepared_request((const uint8_t *)s, len));
+}
+
+/* -------------------------------------------------------------------------
  * Main
  * ---------------------------------------------------------------------- */
 
@@ -145,6 +279,18 @@ int main(void) {
     RUN_TEST(test_mysql_query_empty_sql);
     RUN_TEST(test_mysql_query_large_sql);
     RUN_TEST(test_mysql_query_too_large_errors);
+
+    RUN_TEST(test_mysql_execute_no_params);
+    RUN_TEST(test_mysql_execute_with_string_param);
+    RUN_TEST(test_mysql_execute_with_number_param);
+    RUN_TEST(test_mysql_execute_with_null_param);
+    RUN_TEST(test_mysql_execute_from_prepare_handle);
+    RUN_TEST(test_mysql_execute_wrong_type_errors);
+    RUN_TEST(test_mysql_execute_too_many_params);
+    RUN_TEST(test_mysql_execute_sql_at_limit);
+    RUN_TEST(test_mysql_execute_sql_over_limit);
+    RUN_TEST(test_mysql_prepare_still_works);
+    RUN_TEST(test_mysql_query_still_works);
 
     return UNITY_END();
 }

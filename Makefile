@@ -274,7 +274,10 @@ LUA_MY_ENGINE_DEPS := $(LUA_ENGINE_DEPS) \
                       extensions/mysql/mysql_lua_helpers.c \
                       extensions/mysql/mysql.c
 
-test-unit: $(TEST_UNIT_BIN) $(TEST_STATS_BIN) $(TEST_UNITS_BIN) $(TEST_HDR_BIN) $(TEST_SCRIPT_BIN) $(TEST_HTTP1_BIN) $(TEST_REDIS_BIN) $(TEST_CLI_BIN) $(TEST_LUA_ENGINE_BIN) $(TEST_REDIS_LUA_BIN) $(TEST_EXT_API_BIN) $(TEST_MEMCACHED_EXT_BIN) $(TEST_MC_CODEC_BIN) $(TEST_MC_REQUEST_BIN) $(TEST_MC_LUA_BIN) $(TEST_PG_CODEC_BIN) $(TEST_PG_SCRAM_BIN) $(TEST_PG_LUA_BIN) $(TEST_MY_CODEC_BIN) $(TEST_MY_LUA_BIN)
+TEST_MY_STMT_CODEC_SRC := tests/unit/test_mysql_stmt_codec.c
+TEST_MY_STMT_CODEC_BIN := obj/test_mysql_stmt_codec
+
+test-unit: $(TEST_UNIT_BIN) $(TEST_STATS_BIN) $(TEST_UNITS_BIN) $(TEST_HDR_BIN) $(TEST_SCRIPT_BIN) $(TEST_HTTP1_BIN) $(TEST_REDIS_BIN) $(TEST_CLI_BIN) $(TEST_LUA_ENGINE_BIN) $(TEST_REDIS_LUA_BIN) $(TEST_EXT_API_BIN) $(TEST_MEMCACHED_EXT_BIN) $(TEST_MC_CODEC_BIN) $(TEST_MC_REQUEST_BIN) $(TEST_MC_LUA_BIN) $(TEST_PG_CODEC_BIN) $(TEST_PG_SCRAM_BIN) $(TEST_PG_LUA_BIN) $(TEST_MY_CODEC_BIN) $(TEST_MY_LUA_BIN) $(TEST_MY_STMT_CODEC_BIN)
 	@./$(TEST_UNIT_BIN)
 	@./$(TEST_STATS_BIN)
 	@./$(TEST_UNITS_BIN)
@@ -295,6 +298,7 @@ test-unit: $(TEST_UNIT_BIN) $(TEST_STATS_BIN) $(TEST_UNITS_BIN) $(TEST_HDR_BIN) 
 	@./$(TEST_PG_LUA_BIN)
 	@./$(TEST_MY_CODEC_BIN)
 	@./$(TEST_MY_LUA_BIN)
+	@./$(TEST_MY_STMT_CODEC_BIN)
 
 test-redis: $(TEST_REDIS_BIN)
 	@./$(TEST_REDIS_BIN)
@@ -392,6 +396,15 @@ $(TEST_MY_CODEC_BIN): $(TEST_MY_CODEC_SRC) $(UNITY_SRC) $(MY_CODEC_DEPS) | $(ODI
 	@$(CC) $(CFLAGS) $(UNITY_INC) -Iextensions/mysql -Isrc \
 		-o $@ $(TEST_MY_CODEC_SRC) $(UNITY_SRC) $(MY_CODEC_DEPS) \
 		$(filter -L%,$(LIBS)) -lcrypto
+
+# MySQL prepared-statement codec test: links only mysql_packet.c — no LuaJIT.
+$(TEST_MY_STMT_CODEC_BIN): $(TEST_MY_STMT_CODEC_SRC) $(UNITY_SRC) $(MY_CODEC_DEPS) | $(ODIR)
+	@$(CC) $(CFLAGS) $(UNITY_INC) -Iextensions/mysql -Isrc \
+		-o $@ $(TEST_MY_STMT_CODEC_SRC) $(UNITY_SRC) $(MY_CODEC_DEPS) \
+		$(filter -L%,$(LIBS)) -lcrypto
+
+test-mysql-stmt-codec: $(TEST_MY_STMT_CODEC_BIN)
+	@./$(TEST_MY_STMT_CODEC_BIN)
 
 # NOTE: test_mysql_lua links LuaJIT; intentionally excluded from test-asan.
 $(TEST_MY_LUA_BIN): $(TEST_MY_LUA_SRC) $(UNITY_SRC) $(LUA_MY_ENGINE_DEPS) \
@@ -597,6 +610,11 @@ test-asan: | $(ODIR)
 		$(TEST_MY_CODEC_SRC) $(UNITY_SRC) $(MY_CODEC_DEPS) \
 		$(filter -L%,$(LIBS)) -lcrypto
 	@./obj/asan_mysql_codec
+	@$(CC) $(CFLAGS) $(ASANFLAGS) $(UNITY_INC) -Iextensions/mysql -Isrc \
+		-o obj/asan_mysql_stmt_codec \
+		$(TEST_MY_STMT_CODEC_SRC) $(UNITY_SRC) $(MY_CODEC_DEPS) \
+		$(filter -L%,$(LIBS)) -lcrypto
+	@./obj/asan_mysql_stmt_codec
 ifeq ($(QUICKJS_ENABLED),1)
 	@echo "Building QuickJS ASAN test binaries..."
 	@$(CC) $(CFLAGS) $(ASANFLAGS) $(UNITY_INC) -Isrc \

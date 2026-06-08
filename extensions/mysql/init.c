@@ -8,6 +8,7 @@
 #include "wrkx_extension.h"
 #include "mysql.h"
 #include "mysql_lua_helpers.h"
+#include "mysql_quickjs_helpers.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -65,6 +66,11 @@ void wrkx_extension_init_mysql(const wrkx_extension_api *api) {
 
     api->register_helpers("mysql@lua",
                           mysql_lua_helpers, mysql_lua_helpers_count);
+
+#ifdef WRKX_HAVE_QUICKJS
+    api->register_helpers("mysql@quickjs",
+                          mysql_quickjs_helpers, mysql_quickjs_helpers_count);
+#endif
 
     api->register_schema("mysql", NULL, "3306", mysql_configure_cb);
 }

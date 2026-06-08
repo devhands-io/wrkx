@@ -467,6 +467,70 @@ int mysql_parse_packet(const uint8_t *buf, size_t avail,
         return (int)total;
     }
 
+    /* -----------------------------------------------------------------------
+     * MYSQL_CTX_STMT_PREPARE: response to COM_STMT_PREPARE.
+     *   0x00 → STMT_PREPARE_OK
+     *   0xff → ERR
+     * -------------------------------------------------------------------- */
+    if (ctx == MYSQL_CTX_STMT_PREPARE) {
+        if (tag == 0xff) {
+            out->type = MYSQL_PKT_ERR;
+            if (plen < 3) return -1;
+            out->err.error_code = rd_le16(p + 1);
+            const uint8_t *pp = p + 3; size_t rem = plen - 3;
+            if (rem > 0 && *pp == '#') { pp++; rem--; }
+            if (rem >= 5) { memcpy(out->err.sqlstate, pp, 5); out->err.sqlstate[5]='\0'; pp+=5; rem-=5; }
+            size_t mlen = rem < 255 ? rem : 255;
+            memcpy(out->err.message, pp, mlen); out->err.message[mlen]='\0';
+            return (int)total;
+        }
+        if (tag == 0x00) {
+            /* COM_STMT_PREPARE_OK:
+               [0]=0x00  [1..4]=stmt_id  [5..6]=n_columns  [7..8]=n_params
+               [9]=reserved  [10..11]=warning_count */
+            if (plen < 12) return -1;
+            out->type = MYSQL_PKT_STMT_PREPARE_OK;
+            out->stmt_prepare_ok.stmt_id       = rd_le32(p + 1);
+            out->stmt_prepare_ok.n_columns     = rd_le16(p + 5);
+            out->stmt_prepare_ok.n_params      = rd_le16(p + 7);
+            /* p[9] = reserved */
+            out->stmt_prepare_ok.warning_count = rd_le16(p + 10);
+            return (int)total;
+        }
+        out->type = MYSQL_PKT_UNKNOWN;
+        return (int)total;
+    }
+
+    /* -----------------------------------------------------------------------
+     * MYSQL_CTX_BINARY_ROW: COM_STMT_EXECUTE result row.
+     *   0xfe (len <= 9) → EOF
+     *   0xff → ERR
+     *   anything else → BINARY_ROW
+     * -------------------------------------------------------------------- */
+    if (ctx == MYSQL_CTX_BINARY_ROW) {
+        if (tag == 0xfe && payload_len <= 9) {
+            out->type = MYSQL_PKT_EOF;
+            if (plen >= 5) {
+                out->eof.warnings     = rd_le16(p + 1);
+                out->eof.status_flags = rd_le16(p + 3);
+            }
+            return (int)total;
+        }
+        if (tag == 0xff) {
+            out->type = MYSQL_PKT_ERR;
+            if (plen < 3) return -1;
+            out->err.error_code = rd_le16(p + 1);
+            const uint8_t *pp = p + 3; size_t rem = plen - 3;
+            if (rem > 0 && *pp == '#') { pp++; rem--; }
+            if (rem >= 5) { memcpy(out->err.sqlstate, pp, 5); out->err.sqlstate[5]='\0'; pp+=5; rem-=5; }
+            size_t mlen = rem < 255 ? rem : 255;
+            memcpy(out->err.message, pp, mlen); out->err.message[mlen]='\0';
+            return (int)total;
+        }
+        out->type = MYSQL_PKT_BINARY_ROW;
+        return (int)total;
+    }
+
     out->type = MYSQL_PKT_UNKNOWN;
     return (int)total;
 }
@@ -633,4 +697,219 @@ void mysql_sha2_password_fast(const char *password,
     /* out = stage1 XOR token */
     for (int i = 0; i < 32; i++)
         out[i] ^= stage1[i];
+}
+
+/* -------------------------------------------------------------------------
+ * Encoder: COM_STMT_PREPARE (seq=0, cmd=0x16)
+ * ---------------------------------------------------------------------- */
+
+int mysql_encode_com_stmt_prepare(uint8_t *buf, size_t cap,
+                                  const char *sql, size_t sql_len) {
+    size_t payload = 1 + sql_len;   /* 0x16 + sql bytes */
+    size_t total   = 4 + payload;
+    if (cap < total || payload > 0xFFFFFF) return 0;
+
+    mysql_write_pkt_header(buf, (uint32_t)payload, 0);
+    buf[4] = 0x16;   /* COM_STMT_PREPARE */
+    memcpy(buf + 5, sql, sql_len);
+    return (int)total;
+}
+
+/* -------------------------------------------------------------------------
+ * Encoder: COM_STMT_EXECUTE (seq=0, cmd=0x17)
+ * Text-mode params: MYSQL_TYPE_VAR_STRING (0xfd) for all non-null params.
+ * ---------------------------------------------------------------------- */
+
+int mysql_encode_com_stmt_execute(uint8_t *buf, size_t cap,
+                                  uint32_t stmt_id,
+                                  const char **params,
+                                  const size_t *param_lens,
+                                  int n_params) {
+    if (n_params < 0 || n_params > 127) return 0;
+
+    /* Calculate payload size:
+       1 (cmd) + 4 (stmt_id) + 1 (cursor) + 4 (iter-count)
+       if n_params > 0:
+         ceil(n_params/8) (null bitmap) + 1 (new_params_bound_flag)
+         + n_params * 2 (type entries)
+         + sum of LEI(len) + value for non-null params */
+    size_t null_bitmap_len = (n_params > 0) ? (size_t)((n_params + 7) / 8) : 0;
+
+    size_t value_bytes = 0;
+    if (n_params > 0) {
+        for (int i = 0; i < n_params; i++) {
+            if (params[i] != NULL) {
+                size_t vlen = param_lens[i];
+                /* LEI size for vlen */
+                size_t lei_sz = (vlen < 251) ? 1 :
+                                (vlen < 0x10000) ? 3 :
+                                (vlen < 0x1000000) ? 4 : 9;
+                value_bytes += lei_sz + vlen;
+            }
+        }
+    }
+
+    size_t payload = 1 + 4 + 1 + 4;
+    if (n_params > 0) {
+        payload += null_bitmap_len + 1 + (size_t)n_params * 2 + value_bytes;
+    }
+
+    size_t total = 4 + payload;
+    if (cap < total || payload > 0xFFFFFF) return 0;
+
+    mysql_write_pkt_header(buf, (uint32_t)payload, 0);
+    uint8_t *p = buf + 4;
+
+    *p++ = 0x17;                        /* COM_STMT_EXECUTE */
+    wr_le32(p, stmt_id); p += 4;
+    *p++ = 0x00;                        /* cursor type: no cursor */
+    wr_le32(p, 1); p += 4;             /* iteration-count = 1 */
+
+    if (n_params > 0) {
+        /* null bitmap: bit i set if params[i] == NULL */
+        uint8_t *bitmap = p;
+        memset(bitmap, 0, null_bitmap_len);
+        for (int i = 0; i < n_params; i++) {
+            if (params[i] == NULL)
+                bitmap[i / 8] |= (uint8_t)(1 << (i % 8));
+        }
+        p += null_bitmap_len;
+
+        *p++ = 0x01;   /* new_params_bound_flag */
+
+        /* type entries: 2 bytes each (type=0xfd, unsigned_flag=0x00) */
+        for (int i = 0; i < n_params; i++) {
+            *p++ = 0xfd;   /* MYSQL_TYPE_VAR_STRING */
+            *p++ = 0x00;   /* unsigned flag */
+        }
+
+        /* values for non-null params */
+        for (int i = 0; i < n_params; i++) {
+            if (params[i] != NULL) {
+                size_t vlen = param_lens[i];
+                size_t remaining = cap - (size_t)(p - buf);
+                int lei = mysql_write_lei(p, remaining, (uint64_t)vlen);
+                if (!lei) return 0;
+                p += lei;
+                memcpy(p, params[i], vlen);
+                p += vlen;
+            }
+        }
+    }
+
+    return (int)total;
+}
+
+/* -------------------------------------------------------------------------
+ * Encoder: COM_STMT_CLOSE (seq=0, cmd=0x19)
+ * ---------------------------------------------------------------------- */
+
+int mysql_encode_com_stmt_close(uint8_t *buf, size_t cap, uint32_t stmt_id) {
+    /* payload: 1 (cmd) + 4 (stmt_id) = 5 bytes */
+    if (cap < 9) return 0;
+    mysql_write_pkt_header(buf, 5, 0);
+    buf[4] = 0x19;   /* COM_STMT_CLOSE */
+    wr_le32(buf + 5, stmt_id);
+    return 9;
+}
+
+/* -------------------------------------------------------------------------
+ * Internal "prepared execute" blob magic
+ *
+ * Layout:
+ *   [0..3]  0xFF 0xFF 0xFF 0xEE  (magic)
+ *   [4..7]  sql_len (uint32 LE)
+ *   [8..]   sql bytes
+ *   [8+sql_len]  n_params (uint8)
+ *   for each param:
+ *     [0]  type: 0x00=NULL, 0x01=string
+ *     if type==0x01:
+ *       [1..4]  value_len (uint32 LE)
+ *       [5..]   value bytes
+ * ---------------------------------------------------------------------- */
+
+static const uint8_t prepared_request_magic[4] = { 0xFF, 0xFF, 0xFF, 0xEE };
+
+int mysql_is_prepared_request(const uint8_t *buf, size_t len) {
+    if (len < 4) return 0;
+    return memcmp(buf, prepared_request_magic, 4) == 0 ? 1 : 0;
+}
+
+int mysql_encode_prepared_request(uint8_t *buf, size_t cap,
+                                  const char *sql, size_t sql_len,
+                                  const char **params,
+                                  const size_t *param_lens,
+                                  int n_params) {
+    if (n_params < 0 || n_params > 127) return 0;
+
+    /* Calculate required size */
+    size_t needed = 4 + 4 + sql_len + 1;   /* magic + sql_len + sql + n_params */
+    for (int i = 0; i < n_params; i++) {
+        needed += 1;   /* type byte */
+        if (params[i] != NULL) {
+            needed += 4 + param_lens[i];   /* value_len(uint32) + value */
+        }
+    }
+    if (cap < needed) return 0;
+
+    uint8_t *p = buf;
+    memcpy(p, prepared_request_magic, 4); p += 4;
+
+    wr_le32(p, (uint32_t)sql_len); p += 4;
+    memcpy(p, sql, sql_len); p += sql_len;
+
+    *p++ = (uint8_t)n_params;
+
+    for (int i = 0; i < n_params; i++) {
+        if (params[i] == NULL) {
+            *p++ = 0x00;   /* NULL type */
+        } else {
+            *p++ = 0x01;   /* string type */
+            wr_le32(p, (uint32_t)param_lens[i]); p += 4;
+            memcpy(p, params[i], param_lens[i]);
+            p += param_lens[i];
+        }
+    }
+
+    return (int)(p - buf);
+}
+
+int mysql_decode_prepared_request_params(const uint8_t *blob, size_t blob_len,
+                                         const char **params,
+                                         size_t *param_lens, int *n_params) {
+    if (!mysql_is_prepared_request(blob, blob_len)) return -1;
+    if (blob_len < 4 + 4) return -1;
+
+    const uint8_t *p   = blob + 4;
+    size_t         rem = blob_len - 4;
+
+    uint32_t sql_len = rd_le32(p); p += 4; rem -= 4;
+    if (rem < (size_t)sql_len) return -1;
+    p += sql_len; rem -= sql_len;
+
+    if (rem < 1) return -1;
+    int np = (int)*p++; rem--;
+
+    if (np < 0 || np > 127) return -1;
+    *n_params = np;
+
+    for (int i = 0; i < np; i++) {
+        if (rem < 1) return -1;
+        uint8_t type = *p++; rem--;
+        if (type == 0x00) {
+            params[i]     = NULL;
+            param_lens[i] = 0;
+        } else if (type == 0x01) {
+            if (rem < 4) return -1;
+            uint32_t vlen = rd_le32(p); p += 4; rem -= 4;
+            if (rem < (size_t)vlen) return -1;
+            params[i]     = (const char *)p;
+            param_lens[i] = (size_t)vlen;
+            p += vlen; rem -= vlen;
+        } else {
+            return -1;
+        }
+    }
+
+    return 0;
 }
