@@ -22,4 +22,7 @@ void postgres_configure(struct addrinfo *addr, SSL_CTX *ssl_ctx,
 /* Returns a pointer to the static protocol vtable. */
 protocol *postgres_protocol(void);
 
+/* Exposed for unit tests; counts Q and Sync tags in a write buffer. */
+int32_t count_rfq_expected(const char *buf, size_t len);
+
 #endif /* POSTGRES_H */

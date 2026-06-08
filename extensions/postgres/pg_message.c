@@ -270,16 +270,33 @@ int pg_parse_message(const char *buf, size_t len, pg_parsed_msg *out) {
             break;
         case 10: {
             out->type = PG_MSG_AUTH_SASL;
-            /* copy first mechanism name */
+            /* preserve full NUL-separated list (capped at 255 bytes) */
             size_t copy = bodylen - 4;
-            if (copy > sizeof(out->sasl.sasl_mechanisms) - 1)
-                copy = sizeof(out->sasl.sasl_mechanisms) - 1;
-            memcpy(out->sasl.sasl_mechanisms, body + 4, copy);
-            out->sasl.sasl_mechanisms[copy] = '\0';
-            /* null-terminate at first \0 */
-            char *nul = memchr(out->sasl.sasl_mechanisms, '\0',
-                               sizeof(out->sasl.sasl_mechanisms));
-            if (nul) *nul = '\0';
+            if (copy > sizeof(out->sasl.list) - 1)
+                copy = sizeof(out->sasl.list) - 1;
+            memcpy(out->sasl.list, body + 4, copy);
+            out->sasl.list[copy] = '\0';
+            out->sasl.len = copy;
+            break;
+        }
+        case 11: {
+            out->type = PG_MSG_AUTH_SASL_CONTINUE;
+            size_t copy = bodylen - 4;
+            if (copy > sizeof(out->sasl_continue.data) - 1)
+                copy = sizeof(out->sasl_continue.data) - 1;
+            memcpy(out->sasl_continue.data, body + 4, copy);
+            out->sasl_continue.data[copy] = '\0';
+            out->sasl_continue.len = copy;
+            break;
+        }
+        case 12: {
+            out->type = PG_MSG_AUTH_SASL_FINAL;
+            size_t copy = bodylen - 4;
+            if (copy > sizeof(out->sasl_final.data) - 1)
+                copy = sizeof(out->sasl_final.data) - 1;
+            memcpy(out->sasl_final.data, body + 4, copy);
+            out->sasl_final.data[copy] = '\0';
+            out->sasl_final.len = copy;
             break;
         }
         default: out->type = PG_MSG_UNKNOWN; break;
@@ -291,8 +308,8 @@ int pg_parse_message(const char *buf, size_t len, pg_parsed_msg *out) {
     case 'T': {
         if (bodylen < 2) return -1;
         int16_t ncols = get_i16(body);
-        int16_t stored = (ncols < (int16_t)PG_MAX_COLS)
-                       ? ncols : (int16_t)PG_MAX_COLS;
+        int16_t stored = (ncols < (int16_t)PG_RESULT_MAX_COLS)
+                       ? ncols : (int16_t)PG_RESULT_MAX_COLS;
         out->row_description.ncols = stored;
 
         const char *p   = body + 2;
@@ -301,14 +318,17 @@ int pg_parse_message(const char *buf, size_t len, pg_parsed_msg *out) {
             /* find null terminator for column name */
             const char *nul = memchr(p, '\0', (size_t)(end - p));
             if (!nul) return -1;
+            if (nul + 1 + 18 > end) return -1;
             size_t name_len = (size_t)(nul - p);
             if (i < stored) {
                 size_t copy = name_len < 63 ? name_len : 63;
                 memcpy(out->row_description.cols[i].name, p, copy);
                 out->row_description.cols[i].name[copy] = '\0';
+                /* fixed descriptor: int32(table_oid) + int16(attnum) + int32(type_oid) + ... */
+                out->row_description.cols[i].type_oid =
+                    get_i32(nul + 1 + 4 + 2);   /* skip table_oid(4) + attnum(2) */
             }
-            p = nul + 1 + 18;                   /* skip fixed descriptor fields */
-            if (p > end) return -1;
+            p = nul + 1 + 18;
         }
         out->type = PG_MSG_ROW_DESCRIPTION;
         break;
@@ -317,8 +337,25 @@ int pg_parse_message(const char *buf, size_t len, pg_parsed_msg *out) {
     /* DataRow */
     case 'D': {
         if (bodylen < 2) return -1;
-        out->type    = PG_MSG_DATA_ROW;
-        out->data_row.nfields = get_i16(body);
+        int16_t nf = get_i16(body);
+        out->data_row.nfields = nf;
+        const char *p   = body + 2;
+        const char *end = body + bodylen;
+        int16_t store = (nf < (int16_t)PG_RESULT_MAX_COLS)
+                      ? nf : (int16_t)PG_RESULT_MAX_COLS;
+        for (int16_t i = 0; i < nf; i++) {
+            if (p + 4 > end) return -1;
+            int32_t flen = get_i32(p); p += 4;
+            if (i < store) {
+                out->data_row.fields[i].len  = flen;
+                out->data_row.fields[i].data = (flen >= 0) ? p : NULL;
+            }
+            if (flen > 0) {
+                if (p + flen > end) return -1;
+                p += flen;
+            }
+        }
+        out->type = PG_MSG_DATA_ROW;
         break;
     }
 
@@ -339,6 +376,7 @@ int pg_parse_message(const char *buf, size_t len, pg_parsed_msg *out) {
     /* ReadyForQuery */
     case 'Z':
         out->type = PG_MSG_READY_FOR_QUERY;
+        out->rfq.status = (bodylen >= 1) ? (uint8_t)body[0] : 0;
         break;
 
     /* ErrorResponse / NoticeResponse */
@@ -402,5 +440,39 @@ int pg_parse_message(const char *buf, size_t len, pg_parsed_msg *out) {
         break;
     }
 
+    return (int)total;
+}
+
+/* -------------------------------------------------------------------------
+ * Frontend message encoders — P6-3 SASL
+ * ---------------------------------------------------------------------- */
+
+int pg_encode_sasl_initial_response(char *buf, size_t cap,
+                                    const char *mechanism,
+                                    const char *client_first, size_t cf_len) {
+    size_t mech_len = strlen(mechanism);
+    /* 'p' + int32(msglen) + mechanism + '\0' + int32(cf_len) + client_first */
+    size_t body = mech_len + 1 + 4 + cf_len;
+    size_t total = 1 + 4 + body;
+    if (cap < total) return -1;
+
+    buf[0] = 'p';
+    put_i32(buf + 1, (int32_t)(4 + body));
+    char *p = buf + 5;
+    memcpy(p, mechanism, mech_len); p += mech_len;
+    *p++ = '\0';
+    put_i32(p, (int32_t)cf_len); p += 4;
+    memcpy(p, client_first, cf_len);
+    return (int)total;
+}
+
+int pg_encode_sasl_response(char *buf, size_t cap,
+                            const char *client_final, size_t cf_len) {
+    /* 'p' + int32(msglen) + client_final (no null terminator) */
+    size_t total = 1 + 4 + cf_len;
+    if (cap < total) return -1;
+    buf[0] = 'p';
+    put_i32(buf + 1, (int32_t)(4 + cf_len));
+    memcpy(buf + 5, client_final, cf_len);
     return (int)total;
 }

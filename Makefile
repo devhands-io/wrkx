@@ -251,14 +251,19 @@ TEST_PG_CODEC_SRC  := tests/unit/test_pg_codec.c
 TEST_PG_CODEC_BIN  := obj/test_pg_codec
 PG_CODEC_DEPS      := extensions/postgres/pg_message.c
 
+TEST_PG_SCRAM_SRC  := tests/unit/test_pg_scram.c
+TEST_PG_SCRAM_BIN  := obj/test_pg_scram
+PG_SCRAM_DEPS      := extensions/postgres/pg_scram.c
+
 TEST_PG_LUA_SRC    := tests/unit/test_pg_lua.c
 TEST_PG_LUA_BIN    := obj/test_pg_lua
 LUA_PG_ENGINE_DEPS := $(LUA_ENGINE_DEPS) \
                       extensions/postgres/pg_message.c \
+                      extensions/postgres/pg_scram.c \
                       extensions/postgres/pg_lua_helpers.c \
                       extensions/postgres/postgres.c
 
-test-unit: $(TEST_UNIT_BIN) $(TEST_STATS_BIN) $(TEST_UNITS_BIN) $(TEST_HDR_BIN) $(TEST_SCRIPT_BIN) $(TEST_HTTP1_BIN) $(TEST_REDIS_BIN) $(TEST_CLI_BIN) $(TEST_LUA_ENGINE_BIN) $(TEST_REDIS_LUA_BIN) $(TEST_EXT_API_BIN) $(TEST_MEMCACHED_EXT_BIN) $(TEST_MC_CODEC_BIN) $(TEST_MC_REQUEST_BIN) $(TEST_MC_LUA_BIN) $(TEST_PG_CODEC_BIN) $(TEST_PG_LUA_BIN)
+test-unit: $(TEST_UNIT_BIN) $(TEST_STATS_BIN) $(TEST_UNITS_BIN) $(TEST_HDR_BIN) $(TEST_SCRIPT_BIN) $(TEST_HTTP1_BIN) $(TEST_REDIS_BIN) $(TEST_CLI_BIN) $(TEST_LUA_ENGINE_BIN) $(TEST_REDIS_LUA_BIN) $(TEST_EXT_API_BIN) $(TEST_MEMCACHED_EXT_BIN) $(TEST_MC_CODEC_BIN) $(TEST_MC_REQUEST_BIN) $(TEST_MC_LUA_BIN) $(TEST_PG_CODEC_BIN) $(TEST_PG_SCRAM_BIN) $(TEST_PG_LUA_BIN)
 	@./$(TEST_UNIT_BIN)
 	@./$(TEST_STATS_BIN)
 	@./$(TEST_UNITS_BIN)
@@ -275,6 +280,7 @@ test-unit: $(TEST_UNIT_BIN) $(TEST_STATS_BIN) $(TEST_UNITS_BIN) $(TEST_HDR_BIN) 
 	@./$(TEST_MC_REQUEST_BIN)
 	@./$(TEST_MC_LUA_BIN)
 	@./$(TEST_PG_CODEC_BIN)
+	@./$(TEST_PG_SCRAM_BIN)
 	@./$(TEST_PG_LUA_BIN)
 
 test-redis: $(TEST_REDIS_BIN)
@@ -313,6 +319,9 @@ test-mc-lua: $(TEST_MC_LUA_BIN)
 test-pg-codec: $(TEST_PG_CODEC_BIN)
 	@./$(TEST_PG_CODEC_BIN)
 
+test-pg-scram: $(TEST_PG_SCRAM_BIN)
+	@./$(TEST_PG_SCRAM_BIN)
+
 test-pg-lua: $(TEST_PG_LUA_BIN)
 	@./$(TEST_PG_LUA_BIN)
 
@@ -348,6 +357,12 @@ $(TEST_MC_LUA_BIN): $(TEST_MC_LUA_SRC) $(UNITY_SRC) $(LUA_MC_ENGINE_DEPS) \
 $(TEST_PG_CODEC_BIN): $(TEST_PG_CODEC_SRC) $(UNITY_SRC) $(PG_CODEC_DEPS) | $(ODIR)
 	@$(CC) $(CFLAGS) $(UNITY_INC) -Iextensions/postgres \
 		-o $@ $(TEST_PG_CODEC_SRC) $(UNITY_SRC) $(PG_CODEC_DEPS) \
+		$(filter -L%,$(LIBS)) -lcrypto
+
+# PG SCRAM test: links pg_scram.c + OpenSSL; no LuaJIT, no protocol code.
+$(TEST_PG_SCRAM_BIN): $(TEST_PG_SCRAM_SRC) $(UNITY_SRC) $(PG_SCRAM_DEPS) | $(ODIR)
+	@$(CC) $(CFLAGS) $(UNITY_INC) -Iextensions/postgres -Isrc \
+		-o $@ $(TEST_PG_SCRAM_SRC) $(UNITY_SRC) $(PG_SCRAM_DEPS) \
 		$(filter -L%,$(LIBS)) -lcrypto
 
 # NOTE: test_pg_lua links LuaJIT; intentionally excluded from test-asan.
@@ -537,6 +552,11 @@ test-asan: | $(ODIR)
 		$(TEST_PG_CODEC_SRC) $(UNITY_SRC) $(PG_CODEC_DEPS) \
 		$(filter -L%,$(LIBS)) -lcrypto
 	@./obj/asan_pg_codec
+	@$(CC) $(CFLAGS) $(ASANFLAGS) $(UNITY_INC) -Iextensions/postgres -Isrc \
+		-o obj/asan_pg_scram \
+		$(TEST_PG_SCRAM_SRC) $(UNITY_SRC) $(PG_SCRAM_DEPS) \
+		$(filter -L%,$(LIBS)) -lcrypto
+	@./obj/asan_pg_scram
 ifeq ($(QUICKJS_ENABLED),1)
 	@echo "Building QuickJS ASAN test binaries..."
 	@$(CC) $(CFLAGS) $(ASANFLAGS) $(UNITY_INC) -Isrc \

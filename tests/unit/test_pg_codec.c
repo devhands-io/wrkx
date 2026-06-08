@@ -137,16 +137,18 @@ void test_parse_auth_sasl(void) {
     /* msglen = 4 + 19 = 23; total = 24 */
     char msg[32];
     msg[0] = 'R';
-    msg[1] = 0; msg[2] = 0; msg[3] = 0; msg[4] = 23;   /* int32(23) */
-    msg[5] = 0; msg[6] = 0; msg[7] = 0; msg[8] = 10;   /* int32(10) */
+    msg[1] = 0; msg[2] = 0; msg[3] = 0; msg[4] = 23;
+    msg[5] = 0; msg[6] = 0; msg[7] = 0; msg[8] = 10;
     memcpy(msg + 9, "SCRAM-SHA-256", 13);
-    msg[22] = '\0';   /* mechanism terminator */
-    msg[23] = '\0';   /* list terminator */
+    msg[22] = '\0';
+    msg[23] = '\0';
     pg_parsed_msg out;
     int rc = pg_parse_message(msg, 24, &out);
     TEST_ASSERT_EQUAL_INT(24, rc);
     TEST_ASSERT_EQUAL_INT(PG_MSG_AUTH_SASL, (int)out.type);
-    TEST_ASSERT_EQUAL_MEMORY("SCRAM-SHA-256", out.sasl.sasl_mechanisms, 13);
+    /* P6-3: full list stored in out.sasl.list */
+    TEST_ASSERT_EQUAL_MEMORY("SCRAM-SHA-256", out.sasl.list, 13);
+    TEST_ASSERT_EQUAL_size_t(15, out.sasl.len);   /* "SCRAM-SHA-256\0\0" */
 }
 
 void test_parse_ready_for_query(void) {
@@ -581,6 +583,224 @@ void test_encode_parse_sync_sequence_lengths(void) {
 }
 
 /* =========================================================================
+ * P6-3 codec tests
+ * ====================================================================== */
+
+void test_parse_auth_sasl_continue(void) {
+    /* 'R' + int32(len) + int32(11) + "r=nonce,s=salt,i=4096" */
+    const char *sf = "r=nonce,s=salt,i=4096";
+    size_t sf_len = strlen(sf);
+    int32_t msglen = (int32_t)(4 + 4 + sf_len);
+    size_t total = 1 + (size_t)msglen;
+    char msg[64];
+    msg[0] = 'R';
+    msg[1] = (char)((msglen >> 24) & 0xff);
+    msg[2] = (char)((msglen >> 16) & 0xff);
+    msg[3] = (char)((msglen >>  8) & 0xff);
+    msg[4] = (char)( msglen        & 0xff);
+    msg[5] = 0; msg[6] = 0; msg[7] = 0; msg[8] = 11;
+    memcpy(msg + 9, sf, sf_len);
+
+    pg_parsed_msg out;
+    int rc = pg_parse_message(msg, total, &out);
+    TEST_ASSERT_EQUAL_INT((int)total, rc);
+    TEST_ASSERT_EQUAL_INT(PG_MSG_AUTH_SASL_CONTINUE, (int)out.type);
+    TEST_ASSERT_EQUAL_MEMORY(sf, out.sasl_continue.data, sf_len);
+    TEST_ASSERT_EQUAL_size_t(sf_len, out.sasl_continue.len);
+}
+
+void test_parse_auth_sasl_final(void) {
+    const char *sf = "v=abcdefghij==";
+    size_t sf_len = strlen(sf);
+    int32_t msglen = (int32_t)(4 + 4 + sf_len);
+    size_t total = 1 + (size_t)msglen;
+    char msg[64];
+    msg[0] = 'R';
+    msg[1] = (char)((msglen >> 24) & 0xff);
+    msg[2] = (char)((msglen >> 16) & 0xff);
+    msg[3] = (char)((msglen >>  8) & 0xff);
+    msg[4] = (char)( msglen        & 0xff);
+    msg[5] = 0; msg[6] = 0; msg[7] = 0; msg[8] = 12;
+    memcpy(msg + 9, sf, sf_len);
+
+    pg_parsed_msg out;
+    int rc = pg_parse_message(msg, total, &out);
+    TEST_ASSERT_EQUAL_INT((int)total, rc);
+    TEST_ASSERT_EQUAL_INT(PG_MSG_AUTH_SASL_FINAL, (int)out.type);
+    TEST_ASSERT_EQUAL_MEMORY(sf, out.sasl_final.data, sf_len);
+    TEST_ASSERT_EQUAL_size_t(sf_len, out.sasl_final.len);
+}
+
+void test_encode_sasl_initial_response(void) {
+    char buf[256];
+    const char *mech = "SCRAM-SHA-256";
+    const char *cf   = "n,,n=alice,r=xyz";
+    size_t cf_len    = 15;   /* first 15 bytes of cf */
+    int n = pg_encode_sasl_initial_response(buf, sizeof(buf), mech, cf, cf_len);
+    size_t mech_len = strlen(mech);
+    /* 'p' + int32(4 + mech_len+1 + 4 + cf_len) + mech+\0 + int32(cf_len) + cf */
+    size_t expected = 1 + 4 + mech_len + 1 + 4 + cf_len;
+    TEST_ASSERT_EQUAL_INT((int)expected, n);
+    TEST_ASSERT_EQUAL_CHAR('p', buf[0]);
+    int32_t body_len = rd_i32(buf + 1);
+    TEST_ASSERT_EQUAL_INT32((int32_t)(4 + mech_len + 1 + 4 + cf_len), body_len);
+    TEST_ASSERT_EQUAL_MEMORY(mech, buf + 5, mech_len);
+    TEST_ASSERT_EQUAL_CHAR('\0', buf[5 + mech_len]);
+    int32_t encoded_cf_len = rd_i32(buf + 5 + mech_len + 1);
+    TEST_ASSERT_EQUAL_INT32((int32_t)cf_len, encoded_cf_len);
+    TEST_ASSERT_EQUAL_MEMORY(cf, buf + 5 + mech_len + 1 + 4, cf_len);
+}
+
+void test_encode_sasl_response(void) {
+    char buf[128];
+    const char *payload = "c=biws,r=combined,p=proof";
+    size_t plen = strlen(payload);
+    int n = pg_encode_sasl_response(buf, sizeof(buf), payload, plen);
+    size_t expected = 1 + 4 + plen;
+    TEST_ASSERT_EQUAL_INT((int)expected, n);
+    TEST_ASSERT_EQUAL_CHAR('p', buf[0]);
+    TEST_ASSERT_EQUAL_INT32((int32_t)(4 + plen), rd_i32(buf + 1));
+    TEST_ASSERT_EQUAL_MEMORY(payload, buf + 5, plen);
+}
+
+void test_parse_ready_for_query_status_idle(void) {
+    const char msg[] = "\x5a\x00\x00\x00\x05\x49";
+    pg_parsed_msg out;
+    int rc = pg_parse_message(msg, 6, &out);
+    TEST_ASSERT_EQUAL_INT(6, rc);
+    TEST_ASSERT_EQUAL_INT(PG_MSG_READY_FOR_QUERY, (int)out.type);
+    TEST_ASSERT_EQUAL_UINT8('I', out.rfq.status);
+}
+
+void test_parse_ready_for_query_status_error(void) {
+    const char msg[] = "\x5a\x00\x00\x00\x05\x45";
+    pg_parsed_msg out;
+    int rc = pg_parse_message(msg, 6, &out);
+    TEST_ASSERT_EQUAL_INT(6, rc);
+    TEST_ASSERT_EQUAL_INT(PG_MSG_READY_FOR_QUERY, (int)out.type);
+    TEST_ASSERT_EQUAL_UINT8('E', out.rfq.status);
+}
+
+static void build_row_desc_with_oids(char *buf, size_t cap,
+                                     const char **names,
+                                     const int32_t *oids,
+                                     int ncols, size_t *out_total) {
+    size_t body_len = 2;
+    for (int i = 0; i < ncols; i++)
+        body_len += strlen(names[i]) + 1 + 18;
+    int32_t msglen = (int32_t)(4 + body_len);
+    *out_total = 1 + (size_t)msglen;
+    if (*out_total > cap) { *out_total = 0; return; }
+    buf[0] = 'T';
+    buf[1] = (char)((msglen >> 24) & 0xff);
+    buf[2] = (char)((msglen >> 16) & 0xff);
+    buf[3] = (char)((msglen >>  8) & 0xff);
+    buf[4] = (char)( msglen        & 0xff);
+    buf[5] = (char)((ncols >> 8) & 0xff);
+    buf[6] = (char)( ncols       & 0xff);
+    char *p = buf + 7;
+    for (int i = 0; i < ncols; i++) {
+        size_t nlen = strlen(names[i]);
+        memcpy(p, names[i], nlen); p += nlen; *p++ = '\0';
+        /* table_oid(4) = 0, attnum(2) = 0, type_oid(4) = oids[i], rest 0 */
+        memset(p, 0, 18);
+        /* type_oid is at offset 4+2=6 */
+        p[6] = (char)((oids[i] >> 24) & 0xff);
+        p[7] = (char)((oids[i] >> 16) & 0xff);
+        p[8] = (char)((oids[i] >>  8) & 0xff);
+        p[9] = (char)( oids[i]        & 0xff);
+        p += 18;
+    }
+}
+
+void test_parse_row_description_with_columns(void) {
+    const char  *names[] = {"id", "val"};
+    const int32_t oids[] = {23, 25};   /* int4, text */
+    char msg[256];
+    size_t total = 0;
+    build_row_desc_with_oids(msg, sizeof(msg), names, oids, 2, &total);
+    TEST_ASSERT_GREATER_THAN(0, (int)total);
+
+    pg_parsed_msg out;
+    int rc = pg_parse_message(msg, total, &out);
+    TEST_ASSERT_EQUAL_INT((int)total, rc);
+    TEST_ASSERT_EQUAL_INT(PG_MSG_ROW_DESCRIPTION, (int)out.type);
+    TEST_ASSERT_EQUAL_INT16(2, out.row_description.ncols);
+    TEST_ASSERT_EQUAL_STRING("id",  out.row_description.cols[0].name);
+    TEST_ASSERT_EQUAL_STRING("val", out.row_description.cols[1].name);
+    TEST_ASSERT_EQUAL_INT32(23, out.row_description.cols[0].type_oid);
+    TEST_ASSERT_EQUAL_INT32(25, out.row_description.cols[1].type_oid);
+}
+
+void test_parse_data_row_with_values(void) {
+    /* 'D' + int32(len) + int16(2) + int32(3)+"42\0" + int32(5)+"hello" */
+    /* Note: "42" is 2 chars + implicit NUL but PostgreSQL text format
+     * doesn't NUL-terminate; len=2 and data="42" is more natural for
+     * this test.  Using "42" (2 bytes) and "hello" (5 bytes). */
+    const char *f0 = "42";
+    const char *f1 = "hello";
+    size_t f0len = 2, f1len = 5;
+    size_t body = 2 + 4 + f0len + 4 + f1len;
+    int32_t msglen = (int32_t)(4 + body);
+    size_t total = 1 + (size_t)msglen;
+    char msg[64];
+    msg[0] = 'D';
+    msg[1] = (char)((msglen >> 24) & 0xff);
+    msg[2] = (char)((msglen >> 16) & 0xff);
+    msg[3] = (char)((msglen >>  8) & 0xff);
+    msg[4] = (char)( msglen        & 0xff);
+    msg[5] = 0; msg[6] = 2;   /* nfields=2 */
+    msg[7] = 0; msg[8] = 0; msg[9] = 0; msg[10] = (char)f0len;
+    memcpy(msg + 11, f0, f0len);
+    msg[11 + f0len + 0] = 0;
+    msg[11 + f0len + 1] = 0;
+    msg[11 + f0len + 2] = 0;
+    msg[11 + f0len + 3] = (char)f1len;
+    memcpy(msg + 11 + f0len + 4, f1, f1len);
+
+    pg_parsed_msg out;
+    int rc = pg_parse_message(msg, total, &out);
+    TEST_ASSERT_EQUAL_INT((int)total, rc);
+    TEST_ASSERT_EQUAL_INT(PG_MSG_DATA_ROW, (int)out.type);
+    TEST_ASSERT_EQUAL_INT16(2, out.data_row.nfields);
+    TEST_ASSERT_EQUAL_INT32((int32_t)f0len, out.data_row.fields[0].len);
+    TEST_ASSERT_NOT_NULL(out.data_row.fields[0].data);
+    TEST_ASSERT_EQUAL_MEMORY(f0, out.data_row.fields[0].data, f0len);
+    TEST_ASSERT_EQUAL_INT32((int32_t)f1len, out.data_row.fields[1].len);
+    TEST_ASSERT_EQUAL_MEMORY(f1, out.data_row.fields[1].data, f1len);
+}
+
+void test_parse_data_row_with_null(void) {
+    /* 'D' + int32(10) + int16(2) + int32(-1) + int32(3)+"foo" */
+    const char *f1 = "foo";
+    size_t f1len = 3;
+    size_t body = 2 + 4 + 4 + f1len;
+    int32_t msglen = (int32_t)(4 + body);
+    size_t total = 1 + (size_t)msglen;
+    char msg[32];
+    msg[0] = 'D';
+    msg[1] = (char)((msglen >> 24) & 0xff);
+    msg[2] = (char)((msglen >> 16) & 0xff);
+    msg[3] = (char)((msglen >>  8) & 0xff);
+    msg[4] = (char)( msglen        & 0xff);
+    msg[5] = 0; msg[6] = 2;        /* nfields=2 */
+    msg[7] = 0xff; msg[8] = 0xff;
+    msg[9] = 0xff; msg[10] = 0xff; /* int32(-1) = NULL */
+    msg[11] = 0; msg[12] = 0; msg[13] = 0; msg[14] = (char)f1len;
+    memcpy(msg + 15, f1, f1len);
+
+    pg_parsed_msg out;
+    int rc = pg_parse_message(msg, total, &out);
+    TEST_ASSERT_EQUAL_INT((int)total, rc);
+    TEST_ASSERT_EQUAL_INT(PG_MSG_DATA_ROW, (int)out.type);
+    TEST_ASSERT_EQUAL_INT16(2, out.data_row.nfields);
+    TEST_ASSERT_EQUAL_INT32(-1, out.data_row.fields[0].len);
+    TEST_ASSERT_NULL(out.data_row.fields[0].data);
+    TEST_ASSERT_EQUAL_INT32((int32_t)f1len, out.data_row.fields[1].len);
+    TEST_ASSERT_EQUAL_MEMORY(f1, out.data_row.fields[1].data, f1len);
+}
+
+/* =========================================================================
  * main
  * ====================================================================== */
 
@@ -629,6 +849,17 @@ int main(void) {
     RUN_TEST(test_parse_no_data);
     RUN_TEST(test_parse_parameter_description_zero);
     RUN_TEST(test_encode_parse_sync_sequence_lengths);
+
+    /* P6-3 codec */
+    RUN_TEST(test_parse_auth_sasl_continue);
+    RUN_TEST(test_parse_auth_sasl_final);
+    RUN_TEST(test_encode_sasl_initial_response);
+    RUN_TEST(test_encode_sasl_response);
+    RUN_TEST(test_parse_ready_for_query_status_idle);
+    RUN_TEST(test_parse_ready_for_query_status_error);
+    RUN_TEST(test_parse_row_description_with_columns);
+    RUN_TEST(test_parse_data_row_with_values);
+    RUN_TEST(test_parse_data_row_with_null);
 
     return UNITY_END();
 }

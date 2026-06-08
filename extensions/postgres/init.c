@@ -1,7 +1,7 @@
 /*
- * PostgreSQL extension entry point (ADR 0005, Phase 6, P6-1 + P6-2).
+ * PostgreSQL extension entry point (ADR 0005, Phase 6, P6-1 + P6-2 + P6-3).
  *
- * Registers the PostgreSQL protocol vtable, URL schemas, and Lua helpers
+ * Registers the PostgreSQL protocol vtable, URL schemas, and helpers
  * via the public extension API.  Called once at startup by
  * wrkx_register_all_extensions().
  */
@@ -9,6 +9,7 @@
 #include "wrkx_extension.h"
 #include "postgres.h"
 #include "pg_lua_helpers.h"
+#include "pg_quickjs_helpers.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -27,8 +28,6 @@ static void postgres_configure_cb(const wrkx_connect_info *info) {
     const char *password = NULL;
     const char *dbname   = NULL;
 
-    /* info->password is the raw UF_USERINFO field: "user" or "user:password".
-     * strndup is POSIX-only; use malloc+memcpy to stay within C99. */
     const char *userinfo = info->password;
     if (userinfo) {
         const char *colon = strchr(userinfo, ':');
@@ -49,7 +48,6 @@ static void postgres_configure_cb(const wrkx_connect_info *info) {
         password = NULL;
     }
 
-    /* path is "/dbname" — strip the leading slash. Default to user. */
     if (info->path && info->path[0] == '/' && info->path[1] != '\0')
         dbname = strdup(info->path + 1);
     else
@@ -67,14 +65,23 @@ void wrkx_extension_init_postgres(const wrkx_extension_api *api) {
 
     api->register_protocol(postgres_protocol());
 
-    /* @lua tag: helper bodies cast engine_ctx to lua_State * (Lua-shaped);
-     * host binds them only to the LuaJIT engine. */
     api->register_helpers("postgres@lua",
                           postgres_lua_helpers, postgres_lua_helpers_count);
 
-    /* TLS schemas (postgres+tls://, postgresql+ssl://) deferred to P6-3
-     * — PostgreSQL requires an SSLRequest prelude before the TLS handshake,
-     * which the current transport path does not implement. */
-    api->register_schema("postgres",   NULL, "5432", postgres_configure_cb);
-    api->register_schema("postgresql", NULL, "5432", postgres_configure_cb);
+#ifdef WRKX_HAVE_QUICKJS
+    api->register_helpers("postgres@quickjs",
+                          postgres_quickjs_helpers,
+                          postgres_quickjs_helpers_count);
+#endif
+
+    /* Register plain and TLS schemas.
+     * Passing "postgres+tls" as schema_tls causes the host to set ssl_ctx
+     * when the user supplies postgres+tls://.  detect_protocol() checks the
+     * plain schema first; using it as both args would match as plain and
+     * leave ssl_ctx NULL.  connect() checks ssl_ctx to decide whether to
+     * send the SSLRequest prelude. */
+    api->register_schema("postgres",   "postgres+tls",   "5432",
+                         postgres_configure_cb);
+    api->register_schema("postgresql", "postgresql+ssl",  "5432",
+                         postgres_configure_cb);
 }
