@@ -263,7 +263,18 @@ LUA_PG_ENGINE_DEPS := $(LUA_ENGINE_DEPS) \
                       extensions/postgres/pg_lua_helpers.c \
                       extensions/postgres/postgres.c
 
-test-unit: $(TEST_UNIT_BIN) $(TEST_STATS_BIN) $(TEST_UNITS_BIN) $(TEST_HDR_BIN) $(TEST_SCRIPT_BIN) $(TEST_HTTP1_BIN) $(TEST_REDIS_BIN) $(TEST_CLI_BIN) $(TEST_LUA_ENGINE_BIN) $(TEST_REDIS_LUA_BIN) $(TEST_EXT_API_BIN) $(TEST_MEMCACHED_EXT_BIN) $(TEST_MC_CODEC_BIN) $(TEST_MC_REQUEST_BIN) $(TEST_MC_LUA_BIN) $(TEST_PG_CODEC_BIN) $(TEST_PG_SCRAM_BIN) $(TEST_PG_LUA_BIN)
+TEST_MY_CODEC_SRC  := tests/unit/test_mysql_codec.c
+TEST_MY_CODEC_BIN  := obj/test_mysql_codec
+MY_CODEC_DEPS      := extensions/mysql/mysql_packet.c
+
+TEST_MY_LUA_SRC    := tests/unit/test_mysql_lua.c
+TEST_MY_LUA_BIN    := obj/test_mysql_lua
+LUA_MY_ENGINE_DEPS := $(LUA_ENGINE_DEPS) \
+                      extensions/mysql/mysql_packet.c \
+                      extensions/mysql/mysql_lua_helpers.c \
+                      extensions/mysql/mysql.c
+
+test-unit: $(TEST_UNIT_BIN) $(TEST_STATS_BIN) $(TEST_UNITS_BIN) $(TEST_HDR_BIN) $(TEST_SCRIPT_BIN) $(TEST_HTTP1_BIN) $(TEST_REDIS_BIN) $(TEST_CLI_BIN) $(TEST_LUA_ENGINE_BIN) $(TEST_REDIS_LUA_BIN) $(TEST_EXT_API_BIN) $(TEST_MEMCACHED_EXT_BIN) $(TEST_MC_CODEC_BIN) $(TEST_MC_REQUEST_BIN) $(TEST_MC_LUA_BIN) $(TEST_PG_CODEC_BIN) $(TEST_PG_SCRAM_BIN) $(TEST_PG_LUA_BIN) $(TEST_MY_CODEC_BIN) $(TEST_MY_LUA_BIN)
 	@./$(TEST_UNIT_BIN)
 	@./$(TEST_STATS_BIN)
 	@./$(TEST_UNITS_BIN)
@@ -282,6 +293,8 @@ test-unit: $(TEST_UNIT_BIN) $(TEST_STATS_BIN) $(TEST_UNITS_BIN) $(TEST_HDR_BIN) 
 	@./$(TEST_PG_CODEC_BIN)
 	@./$(TEST_PG_SCRAM_BIN)
 	@./$(TEST_PG_LUA_BIN)
+	@./$(TEST_MY_CODEC_BIN)
+	@./$(TEST_MY_LUA_BIN)
 
 test-redis: $(TEST_REDIS_BIN)
 	@./$(TEST_REDIS_BIN)
@@ -371,6 +384,27 @@ $(TEST_PG_LUA_BIN): $(TEST_PG_LUA_SRC) $(UNITY_SRC) $(LUA_PG_ENGINE_DEPS) \
 	@$(CC) $(CFLAGS) $(UNITY_INC) -Iextensions/postgres -Isrc -I$(LDIR) \
 		-o $@ $(TEST_PG_LUA_SRC) $(UNITY_SRC) $(LUA_PG_ENGINE_DEPS) \
 		$(ODIR)/bytecode.o $(LDFLAGS) $(LIBS)
+
+# MySQL codec test: links only mysql_packet.c — no transport, no LuaJIT.
+# Uses -lcrypto (mysql_packet.c calls EVP_sha1/sha256) instead of $(LIBS)
+# to avoid pulling in -lluajit.
+$(TEST_MY_CODEC_BIN): $(TEST_MY_CODEC_SRC) $(UNITY_SRC) $(MY_CODEC_DEPS) | $(ODIR)
+	@$(CC) $(CFLAGS) $(UNITY_INC) -Iextensions/mysql -Isrc \
+		-o $@ $(TEST_MY_CODEC_SRC) $(UNITY_SRC) $(MY_CODEC_DEPS) \
+		$(filter -L%,$(LIBS)) -lcrypto
+
+# NOTE: test_mysql_lua links LuaJIT; intentionally excluded from test-asan.
+$(TEST_MY_LUA_BIN): $(TEST_MY_LUA_SRC) $(UNITY_SRC) $(LUA_MY_ENGINE_DEPS) \
+                    $(ODIR)/bytecode.o $(LDIR)/libluajit.a | $(ODIR)
+	@$(CC) $(CFLAGS) $(UNITY_INC) -Iextensions/mysql -Isrc -I$(LDIR) \
+		-o $@ $(TEST_MY_LUA_SRC) $(UNITY_SRC) $(LUA_MY_ENGINE_DEPS) \
+		$(ODIR)/bytecode.o $(LDFLAGS) $(LIBS)
+
+test-mysql-codec: $(TEST_MY_CODEC_BIN)
+	@./$(TEST_MY_CODEC_BIN)
+
+test-mysql-lua: $(TEST_MY_LUA_BIN)
+	@./$(TEST_MY_LUA_BIN)
 
 # ---------------------------------------------------------------------------
 # Extension header isolation check (Gate C prerequisite)
@@ -465,6 +499,7 @@ test-e2e:
 	@bash tests/e2e/memcached_set_delete.sh
 	@bash tests/e2e/memcached_counters.sh
 	@bash tests/e2e/memcached_robustness.sh
+	@bash tests/e2e/mysql_basic.sh
 
 # Run E2E suite against a real memcached service (requires memcached running).
 # Local: memcached -d && make EXTENSIONS=memcached test-memcached-real
@@ -557,6 +592,11 @@ test-asan: | $(ODIR)
 		$(TEST_PG_SCRAM_SRC) $(UNITY_SRC) $(PG_SCRAM_DEPS) \
 		$(filter -L%,$(LIBS)) -lcrypto
 	@./obj/asan_pg_scram
+	@$(CC) $(CFLAGS) $(ASANFLAGS) $(UNITY_INC) -Iextensions/mysql -Isrc \
+		-o obj/asan_mysql_codec \
+		$(TEST_MY_CODEC_SRC) $(UNITY_SRC) $(MY_CODEC_DEPS) \
+		$(filter -L%,$(LIBS)) -lcrypto
+	@./obj/asan_mysql_codec
 ifeq ($(QUICKJS_ENABLED),1)
 	@echo "Building QuickJS ASAN test binaries..."
 	@$(CC) $(CFLAGS) $(ASANFLAGS) $(UNITY_INC) -Isrc \
