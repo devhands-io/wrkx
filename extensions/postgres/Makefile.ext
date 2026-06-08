@@ -1,0 +1,6 @@
+EXT_SRCS     += extensions/postgres/postgres.c \
+                extensions/postgres/pg_message.c \
+                extensions/postgres/pg_lua_helpers.c \
+                extensions/postgres/init.c
+EXT_INIT_FNS += wrkx_extension_init_postgres
+EXT_CFLAGS   += -Iextensions/postgres
