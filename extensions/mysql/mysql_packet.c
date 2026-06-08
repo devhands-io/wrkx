@@ -419,15 +419,15 @@ int mysql_parse_packet(const uint8_t *buf, size_t avail,
         int n = read_lei_str(pp, rem, tmp, sizeof(tmp)); if (!n) return -1; pp+=n; rem-=(size_t)n;
         /* schema */
         n = read_lei_str(pp, rem, out->column_def.schema, sizeof(out->column_def.schema));
-        if (!n) return -1; pp+=n; rem-=(size_t)n;
+        if (!n) return -1; else { pp+=n; rem-=(size_t)n; }
         /* table */
         n = read_lei_str(pp, rem, out->column_def.table, sizeof(out->column_def.table));
-        if (!n) return -1; pp+=n; rem-=(size_t)n;
+        if (!n) return -1; else { pp+=n; rem-=(size_t)n; }
         /* org_table */
         n = read_lei_str(pp, rem, tmp, sizeof(tmp)); if (!n) return -1; pp+=n; rem-=(size_t)n;
         /* name */
         n = read_lei_str(pp, rem, out->column_def.name, sizeof(out->column_def.name));
-        if (!n) return -1; pp+=n; rem-=(size_t)n;
+        if (!n) return -1; else { pp+=n; rem-=(size_t)n; }
         /* org_name */
         n = read_lei_str(pp, rem, tmp, sizeof(tmp)); if (!n) return -1; pp+=n; rem-=(size_t)n;
         /* 0x0c length marker + charset(2) + col_length(4) + type(1) */
